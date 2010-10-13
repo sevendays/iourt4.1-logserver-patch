@@ -1,0 +1,13 @@
++-------------------------------+
+| Logserver Patch for IoURT 4.1 |
++-------------------------------+
+
+
+This repository contains the IoUrbanTerror gameserver code, the scope of the project is to patch the code in such a manner that the logging is done via UDP rather than written to file.
+
+This enables gameserver farms to have a single separate server for logging and game stats, and gamebot developers to avoid opening and parsing logfiles or installing the gamebot on the same machine used by the gameserver.
+
+
+Kudos to Rambetter who set up a svn repository having many useful patches. The original code of this project was taken from his svn repo.
+
+--sevendays
