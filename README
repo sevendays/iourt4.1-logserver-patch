@@ -7,8 +7,6 @@ This repository contains the IoUrbanTerror gameserver code, the scope of the pro
 
 This enables gameserver farms to have a single separate server for logging and game stats, and gamebot developers to avoid opening and parsing logfiles or installing the gamebot on the same machine used by the gameserver.
 
-At the time being, the master branch has no code: I'm developing on the experimental branch until something is ready for production.
-
 Kudos to Rambetter who set up a svn repository having many useful patches. The original code of this project was taken from his svn repo. You can find it here: http://forums.urbanterror.info/topic/18495-svn-repository-for-iourbanterror-exploit-fixes/
 
 --sevendays
