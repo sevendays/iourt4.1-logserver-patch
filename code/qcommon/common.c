@@ -3371,3 +3371,9 @@ void Com_RandomBytes( byte *string, int len )
 		string[i] = (unsigned char)( rand() % 255 );
 }
 
+// Remote logging init
+void LOG_Init( void )
+{
+    SV_ResolveLogServer();
+    SV_LogServerPing();
+}

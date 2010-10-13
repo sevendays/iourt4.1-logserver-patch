@@ -407,6 +407,7 @@ char	*Cmd_Args (void);
 char	*Cmd_ArgsFrom( int arg );
 void	Cmd_ArgsBuffer( char *buffer, int bufferLength );
 char	*Cmd_Cmd (void);
+void	Cmd_Args_Sanitize( void );
 // The functions that execute commands get their parameters with these
 // functions. Cmd_Argv () will return an empty string, not a NULL
 // if arg > argc, so string operations are allways safe.
@@ -871,6 +872,9 @@ void Com_Init( char *commandLine );
 void Com_Frame( void );
 void Com_Shutdown( void );
 
+//remote logging
+void LOG_Init( void );
+
 
 /*
 ==============================================================
@@ -943,6 +947,8 @@ void SCR_DebugGraph (float value, int color);	// FIXME: move logging to common?
 // server interface
 //
 void SV_Init( void );
+void SV_ResolveLogServer( void );
+void SV_LogServerPing( void );
 void SV_Shutdown( char *finalmsg );
 void SV_Frame( int msec );
 void SV_PacketEvent( netadr_t from, msg_t *msg );

@@ -54,6 +54,8 @@ cvar_t	*sv_floodProtect;
 cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
 cvar_t	*sv_strictAuth;
 
+cvar_t *sv_logServerAddress;
+cvar_t *sv_logServerPassword;
 /*
 =============================================================================
 
@@ -172,18 +174,25 @@ void QDECL SV_SendServerCommand(client_t *cl, const char *fmt, ...) {
 	byte		message[MAX_MSGLEN];
 	client_t	*client;
 	int			j;
+	int			msglen;
 	
 	va_start (argptr,fmt);
 	Q_vsnprintf ((char *)message, sizeof(message), fmt,argptr);
 	va_end (argptr);
 
+	msglen = strlen((char *)message);
+
 	// Fix to http://aluigi.altervista.org/adv/q3msgboom-adv.txt
 	// The actual cause of the bug is probably further downstream
 	// and should maybe be addressed later, but this certainly
 	// fixes the problem for now
-	if ( strlen ((char *)message) > 1022 ) {
+	if ( msglen > 1022 ) {
 		return;
 	}
+
+	/////////////////////////////////////////////////////////
+	// separator for incognito.patch and specchatglobal.patch
+	/////////////////////////////////////////////////////////
 
 	if ( cl != NULL ) {
 		SV_AddServerCommand( cl, (char *)message );
@@ -452,19 +461,21 @@ void SVC_RemoteCommand( netadr_t from, msg_t *msg ) {
 
 	// TTimo - https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=534
 	time = Com_Milliseconds();
-	if ( (unsigned)( time - lasttime ) < 500u ) {
-		return;
-	}
-	lasttime = time;
-
 	if ( !strlen( sv_rconPassword->string ) ||
 		strcmp (Cmd_Argv(1), sv_rconPassword->string) ) {
+		if ( (unsigned)( time - lasttime ) < 500u ) {
+			return;
+		}
 		valid = qfalse;
 		Com_Printf ("Bad rcon from %s:\n%s\n", NET_AdrToString (from), Cmd_Argv(2) );
 	} else {
+		if ( (unsigned)( time - lasttime ) < 100u ) {
+			return;
+		}
 		valid = qtrue;
 		Com_Printf ("Rcon from %s:\n%s\n", NET_AdrToString (from), Cmd_Argv(2) );
 	}
+	lasttime = time;
 
 	// start redirecting all print outputs to the packet
 	svs.redirectAddress = from;
@@ -538,6 +549,9 @@ void SV_ConnectionlessPacket( netadr_t from, msg_t *msg ) {
 		SV_AuthorizeIpPacket( from );
 	} else if (!Q_stricmp(c, "rcon")) {
 		SVC_RemoteCommand( from, msg );
+	////////////////////////////////////////////////
+	// separator for ip2loc.patch and playerdb.patch
+	////////////////////////////////////////////////
 	} else if (!Q_stricmp(c, "disconnect")) {
 		// if a client starts up a local server, we may see some spurious
 		// server disconnect messages when their new server sees our final

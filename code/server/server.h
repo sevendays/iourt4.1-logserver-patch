@@ -79,6 +79,11 @@ typedef struct {
 
 	int				restartTime;
 	int				time;
+
+	/////////////////////////////////////////////////////////
+	// separator for incognito.patch and specchatglobal.patch
+	/////////////////////////////////////////////////////////
+
 } server_t;
 
 
@@ -195,6 +200,7 @@ typedef struct {
 
 #define	MAX_MASTERS	8				// max recipients for heartbeat packets
 
+#define MAX_LOGSERVER_PASSWORD_STRING 32
 
 // this structure will be cleared only when the game dll changes
 typedef struct {
@@ -213,6 +219,14 @@ typedef struct {
 	netadr_t	redirectAddress;			// for rcon return messages
 
 	netadr_t	authorizeAddress;			// for rcon return messages
+
+	////////////////////////////////////////////////
+	// separator for ip2loc.patch and playerdb.patch
+	////////////////////////////////////////////////
+	netadr_t logServerAddress;
+	char logServerPassword[MAX_LOGSERVER_PASSWORD_STRING];
+	
+
 } serverStatic_t;
 
 //=============================================================================
@@ -250,6 +264,8 @@ extern	cvar_t	*sv_pure;
 extern	cvar_t	*sv_floodProtect;
 extern	cvar_t	*sv_lanForceRate;
 extern	cvar_t	*sv_strictAuth;
+extern cvar_t *sv_logServerAddress;
+extern cvar_t *sv_logServerPassword;
 
 //===========================================================
 
@@ -282,7 +298,6 @@ void SV_GetUserinfo( int index, char *buffer, int bufferSize );
 
 void SV_ChangeMaxClients( void );
 void SV_SpawnServer( char *server, qboolean killBots );
-
 
 
 //

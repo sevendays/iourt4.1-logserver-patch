@@ -585,6 +585,8 @@ int main( int argc, char **argv )
 
 	CON_Init( );
 
+        LOG_Init();
+
 #ifndef _WIN32
 	// Windows doesn't have these signals
 	// see CON_CtrlHandler() in con_win32.c
