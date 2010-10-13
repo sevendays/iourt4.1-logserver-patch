@@ -1,0 +1,102 @@
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 496)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_logRconArgs;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 496)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_logRconArgs = Cvar_Get ("sv_logRconArgs", "0", CVAR_ARCHIVE );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 496)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,8 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_logRconArgs;		// whether to log rcon command args; 0 don't log, default
++
+ /*
+ =============================================================================
+ 
+@@ -465,25 +467,18 @@
+ 			return;
+ 		}
+ 		valid = qfalse;
+-		Com_Printf ("Bad rcon from %s:\n%s\n", NET_AdrToString (from), Cmd_Argv(2) );
++		if (sv_logRconArgs->integer > 0) {
++			Com_Printf("Bad rcon from %s\n", NET_AdrToString(from));
++		}
++		else {
++			Com_Printf("Bad rcon from %s:\n%s\n", NET_AdrToString(from), Cmd_Argv(2));
++		}
+ 	} else {
+ 		if ( (unsigned)( time - lasttime ) < 100u ) {
+ 			return;
+ 		}
+ 		valid = qtrue;
+-		Com_Printf ("Rcon from %s:\n%s\n", NET_AdrToString (from), Cmd_Argv(2) );
+-	}
+-	lasttime = time;
+ 
+-	// start redirecting all print outputs to the packet
+-	svs.redirectAddress = from;
+-	Com_BeginRedirect (sv_outputbuf, SV_OUTPUTBUF_LENGTH, SV_FlushRedirect);
+-
+-	if ( !strlen( sv_rconPassword->string ) ) {
+-		Com_Printf ("No rconpassword set on the server.\n");
+-	} else if ( !valid ) {
+-		Com_Printf ("Bad rconpassword.\n");
+-	} else {
+ 		remaining[0] = 0;
+ 		
+ 		// https://zerowing.idsoftware.com/bugzilla/show_bug.cgi?id=543
+@@ -500,11 +495,28 @@
+ 			cmd_aux++;
+ 		
+ 		Q_strcat( remaining, sizeof(remaining), cmd_aux);
+-		
+-		Cmd_ExecuteString (remaining);
+ 
++		if (sv_logRconArgs->integer > 0) {
++			Com_Printf("Rcon from %s: %s\n", NET_AdrToString(from), remaining);
++		}
++		else {
++			Com_Printf("Rcon from %s:\n%s\n", NET_AdrToString(from), Cmd_Argv(2));
++		}
+ 	}
++	lasttime = time;
+ 
++	// start redirecting all print outputs to the packet
++	svs.redirectAddress = from;
++	Com_BeginRedirect (sv_outputbuf, SV_OUTPUTBUF_LENGTH, SV_FlushRedirect);
++
++	if ( !strlen( sv_rconPassword->string ) ) {
++		Com_Printf ("No rconpassword set on the server.\n");
++	} else if ( !valid ) {
++		Com_Printf ("Bad rconpassword.\n");
++	} else {		
++		Cmd_ExecuteString (remaining);
++	}
++
+ 	Com_EndRedirect ();
+ }
+ 

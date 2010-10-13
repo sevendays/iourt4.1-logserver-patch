@@ -1,0 +1,77 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 501)
++++ code/server/sv_client.c	(working copy)
+@@ -1339,6 +1339,7 @@
+ 			argsFromOneMaxlen = -1;
+ 			if (Q_stricmp("say", Cmd_Argv(0)) == 0 ||
+ 					Q_stricmp("say_team", Cmd_Argv(0)) == 0) {
++				sv.lastSpecChat[0] = '\0';
+ 				argsFromOneMaxlen = MAX_SAY_STRLEN;
+ 			}
+ 			else if (Q_stricmp("tell", Cmd_Argv(0)) == 0) {
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 501)
++++ code/server/server.h	(working copy)
+@@ -84,6 +84,8 @@
+ 	// separator for incognito.patch and specchatglobal.patch
+ 	/////////////////////////////////////////////////////////
+ 
++	char				lastSpecChat[512];
++
+ } server_t;
+ 
+ 
+@@ -261,6 +263,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_specChatGlobal;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 501)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_specChatGlobal = Cvar_Get ("sv_specChatGlobal", "0", CVAR_ARCHIVE );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 501)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,9 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_specChatGlobal;		// whether to broadcast spec chat globally
++					// default 0 don't broadcast
++
+ /*
+ =============================================================================
+ 
+@@ -192,6 +195,15 @@
+ 	// separator for incognito.patch and specchatglobal.patch
+ 	/////////////////////////////////////////////////////////
+ 
++	if (sv_specChatGlobal->integer > 0 && cl != NULL &&
++			!Q_strncmp((char *) message, "chat \"^7(SPEC) ", 15)) {
++		if (!Q_strncmp((char *) message, sv.lastSpecChat, sizeof(sv.lastSpecChat) - 1)) {
++			return;
++		}
++		Q_strncpyz(sv.lastSpecChat, (char *) message, sizeof(sv.lastSpecChat));
++		cl = NULL;
++	}
++
+ 	if ( cl != NULL ) {
+ 		SV_AddServerCommand( cl, (char *)message );
+ 		return;

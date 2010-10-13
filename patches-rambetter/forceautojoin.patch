@@ -1,0 +1,73 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 518)
++++ code/server/sv_client.c	(working copy)
+@@ -1392,6 +1392,27 @@
+ 			//////////////////////////////////////////////////////////
+ 			// separator for logcallvote.patch and forceautojoin.patch
+ 			//////////////////////////////////////////////////////////
++			else if (Q_stricmp("team", Cmd_Argv(0)) == 0) {
++				if (sv_forceAutojoin->integer > 0 && cl->netchan.remoteAddress.type != NA_BOT) {
++					// The user interface buttons for joining red and blue in UrT send the strings
++					// "team red" and "team blue" respectively.  The button for autojoin sends the string
++					// "team free".  We're going to convert both "team red" and "team blue" to "team free".
++					if (Q_stricmp("red", Cmd_Argv(1)) == 0 || Q_stricmp("blue", Cmd_Argv(1)) == 0) {
++						Cmd_TokenizeString("team free");
++						SV_SendServerCommand(cl, "print \"Forcing autojoin.\n\"");
++					}
++				}
++				// Define a shorthand "team r" to mean "team red" and "team b" to mean "team blue".
++				// This is done after the force autojoin logic above.  This will enable non-noobs who
++				// know how to use the console and who know about this feature to bypass the force
++				// autojoin feature.  This shorthand works regardless of the sv_forceAutojoin setting.
++				if (Q_stricmp("r", Cmd_Argv(1)) == 0) {
++					Cmd_TokenizeString("team red");
++				}
++				else if (Q_stricmp("b", Cmd_Argv(1)) == 0) {
++					Cmd_TokenizeString("team blue");
++				}
++			}
+ 
+ 			VM_Call( gvm, GAME_CLIENT_COMMAND, cl - svs.clients );
+ 		}
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 518)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_forceAutojoin;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 518)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_forceAutojoin = Cvar_Get ("sv_forceAutojoin", "0", CVAR_ARCHIVE );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 518)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,10 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_forceAutojoin;		// whether to translate the "team red" and "team blue"
++					// client commands to "team free" (which will autojoin),
++					// default 0 don't translate
++
+ /*
+ =============================================================================
+ 

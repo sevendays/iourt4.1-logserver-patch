@@ -1,0 +1,17 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 495)
++++ code/server/sv_client.c	(working copy)
+@@ -1388,7 +1388,11 @@
+ 					return;
+ 				}
+ 			}
+-
++			else if (Q_stricmp("callvote", Cmd_Argv(0)) == 0) {
++				Com_Printf("Callvote from %s (client #%i, %s): %s\n",
++						cl->name, cl - svs.clients,
++						NET_AdrToString(cl->netchan.remoteAddress), Cmd_Args());
++			}
+ 			//////////////////////////////////////////////////////////
+ 			// separator for logcallvote.patch and forceautojoin.patch
+ 			//////////////////////////////////////////////////////////
