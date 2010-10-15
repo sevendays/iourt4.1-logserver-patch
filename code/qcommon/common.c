@@ -83,6 +83,12 @@ cvar_t	*com_ansiColor;
 cvar_t	*com_unfocused;
 cvar_t	*com_minimized;
 
+// Remote logserver cvars. TODO put 'em in a better place!
+cvar_t *logserver_enable;  // true = send log via udp, false = log to file
+cvar_t *logserver_address; // where the logserver is. e.g. "localhost.22122"
+cvar_t *logserver_user;    // like SQL databases, you've got to authenticate
+cvar_t *logserver_password;// like SQL databases, you've got to authenticate
+
 // com_speeds times
 int		time_game;
 int		time_frontend;		// renderer frontend time
@@ -3374,6 +3380,24 @@ void Com_RandomBytes( byte *string, int len )
 // Remote logging init
 void LOG_Init( void )
 {
-    SV_ResolveLogServer();
-    SV_LogServerPing();
+    logserver_enable = Cvar_Get("logserver_enable", "0", CVAR_ARCHIVE);
+    logserver_address = Cvar_Get("logserver_address", "localhost:27961", CVAR_ARCHIVE);
+    logserver_user = Cvar_Get("logserver_user", "anonymous", CVAR_ARCHIVE);
+    logserver_password = Cvar_Get("logserver_password", "anonymous", CVAR_TEMP);
+    
+    // let's see if it's enabled
+    if(logserver_enable->modified == qtrue)
+    {
+        if(logserver_enable->value == 0)
+        {
+            Com_Printf("Logserver not enabled, skipping.\n");
+            return;
+        }
+    }
+    // Ok, it is enabled.
+    // get the address right, and save it inside svs
+    LOG_ResolveAddress();
+
+    // perform authentication, save user/pass inside svs
+    LOG_Authenticate();
 }

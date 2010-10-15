@@ -678,8 +678,6 @@ void SV_Init (void) {
 	sv_mapChecksum = Cvar_Get ("sv_mapChecksum", "", CVAR_ROM);
 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
-	sv_logServerAddress = Cvar_Get("sv_logserverAddress", "nrfw.org:27961", CVAR_ARCHIVE);
-	sv_logServerPassword = Cvar_Get("sv_logServerPassword", "passacaso", CVAR_ARCHIVE);
 
 	// initialize bot cvars so they are listed and can be set before loading the botlib
 	SV_BotInitCvars();
@@ -765,74 +763,68 @@ void SV_Shutdown( char *finalmsg ) {
 
 /*
 ==================
-SV_ResolveLogServer
+ LOG_ResolveAddress
 
 sv_logServerAddress->string is not touched by this function.  svs.playerDatabaseAddress.type
 will be set to NA_BAD when resolution fails or when sv_logServerAddress is empty.
 ==================
 */
-void SV_ResolveLogServer( void ) {
-	int	res;
-	sv_logServerAddress->modified = qtrue;
-	if (sv_logServerAddress->modified) { // This will be true when server starts up even if sv_logServerAddress is empty.
-		sv_logServerAddress->modified = qfalse;
-		if (sv_logServerAddress->string[0]) {
-			Com_Printf("Resolving logserver address %s\n", sv_logServerAddress->string);
-			res = NET_StringToAdr(sv_logServerAddress->string, &svs.logServerAddress);
-			if (!res) {
-				// svs.logServerAddress.type will be set to NA_BAD by NET_StringToAdr().
-				Com_Printf("Couldn't resolve logserver address: %s\n", sv_logServerAddress->string);
-				return;
-			}
-			if (res == 2) {
-				// Set the default port since it was not specified.
-				svs.logServerAddress.port = BigShort(27962);
-			}
-			Com_Printf("%s (logserver) resolved to %s\n", sv_logServerAddress->string, NET_AdrToString(svs.logServerAddress));
-		}
-		else {
-			svs.logServerAddress.type = NA_BAD;
-		}
-	}
+void LOG_ResolveAddress( void ) {
+    int res;
+    if(logserver_address->modified == qtrue)
+    {
+        logserver_address->modified = qfalse;
+        if(logserver_address->string[0])
+        {
+            Com_Printf("Resolving given logserver address:%s...", logserver_address->string);
+            res = NET_StringToAdr(logserver_address->string, &svs.logserverAddress);
+            if(!res)
+            {
+                // DNS fail, svs.logServerAddress.type is set to NA_BAD
+                Com_Printf("FAIL! Remote logging will not be available.\n");
+                Cvar_Set("sv_logServerEnable","0");
+                return;
+            }
+            if(res == 2)
+            {
+                // the port was not specified. we'll set the default one
+                //TODO: which one should be the default? :/
+                Com_Printf("Setting default port 12121...");
+                svs.logserverAddress.port = BigShort(12121);
+            }
+            // address resolved happily
+            Com_Printf("Logserver resolved to %s\n", NET_AdrToString(svs.logserverAddress));
+        }
+    }
 }
 
 /*
 ==================
-SV_LogServerPing
+LOG_Authenticate
 
 Try to see if the logserver is alive and willing to chat.
 ==================
 */
-void SV_LogServerPing( void ) {
+void LOG_Authenticate( void ) {
     char string[MAX_MSGLEN];
     unsigned short i;
-    if (sv_logServerPassword->string[0])
+    if (logserver_password->string[0] && logserver_user->string[0])
     {
-        sprintf(string, "password: %s\n", sv_logServerPassword->string);
-        Com_Printf(string);
+        sprintf(string, "u\\%s\\p%s\n", logserver_user->string, logserver_password->string);
+        Com_Printf("Trying to authenticate with the logserver: %s", string);
+
+        // TODO do a serious authentication thingy.
         for(i=0; i<10; i++)
         {
-            Sys_SendPacket(strlen(string), string, svs.logServerAddress);
+            Sys_SendPacket(strlen(string), string, svs.logserverAddress);
         }
+
+        // TODO the server should answer, and we should save the user into
+        // the serverStatic_t structure: svs_logServerUser.
     }
     else
     {
-        Com_Printf("The password has not been set!\n");
+        Com_Printf("The logserver user/password haven't been set!\n");
     }
-	// let's make a check on the address type.
-	/*if(svs.logServerAddress.type != NA_BAD)
-	{
-		for(i=1; i<21; i++)
-		{
-                        sprintf(string, "gameserverAuth\n%s\n", svs.logServerPassword);
-			Sys_SendPacket(strlen(string), string, svs.logServerAddress);
-			Com_Printf("%s try: %u\n", string, i);
-		}
-	}
-	else
-	{
-		// the logserver isn't a good address or IP address.
-		Com_Printf("Please check your log file size from time to time!\n");
-	}*/
 }
 

@@ -201,6 +201,7 @@ typedef struct {
 #define	MAX_MASTERS	8				// max recipients for heartbeat packets
 
 #define MAX_LOGSERVER_PASSWORD_STRING 32
+#define MAX_LOGSERVER_USER_STRING 32
 
 // this structure will be cleared only when the game dll changes
 typedef struct {
@@ -223,8 +224,9 @@ typedef struct {
 	////////////////////////////////////////////////
 	// separator for ip2loc.patch and playerdb.patch
 	////////////////////////////////////////////////
-	netadr_t logServerAddress;
-	char logServerPassword[MAX_LOGSERVER_PASSWORD_STRING];
+	netadr_t logserverAddress;
+        char logserverUser[MAX_LOGSERVER_USER_STRING];
+	char logserverPassword[MAX_LOGSERVER_PASSWORD_STRING];
 	
 
 } serverStatic_t;
@@ -264,8 +266,12 @@ extern	cvar_t	*sv_pure;
 extern	cvar_t	*sv_floodProtect;
 extern	cvar_t	*sv_lanForceRate;
 extern	cvar_t	*sv_strictAuth;
-extern cvar_t *sv_logServerAddress;
-extern cvar_t *sv_logServerPassword;
+
+// since this file is included by sys/sv_main.c, it shoud be the right place.
+extern cvar_t *logserver_enable;
+extern cvar_t *logserver_address;
+extern cvar_t *logserver_user;
+extern cvar_t *logserver_password;
 
 //===========================================================
 
@@ -425,3 +431,11 @@ void SV_Netchan_Transmit( client_t *client, msg_t *msg);
 void SV_Netchan_TransmitNextFragment( client_t *client );
 qboolean SV_Netchan_Process( client_t *client, msg_t *msg );
 
+// remote logging
+//TODO: find a better place! Maybe a code/logserver folder...
+// The problem is that we have to define the cvars first,
+// and they're in this same file!
+void LOG_Init( void );
+void LOG_ResolveAddress( void );
+void LOG_Authenticate( void );
+//void LOG_Send( void ); TODO?

@@ -31,6 +31,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include <ctype.h>
 #include <errno.h>
 
+#define DEDICATED 1 // added only because netbeans greys out the server code. :S
+
 #ifndef DEDICATED
 #ifdef USE_LOCAL_HEADERS
 #	include "SDL.h"
@@ -585,7 +587,9 @@ int main( int argc, char **argv )
 
 	CON_Init( );
 
+        #ifdef DEDICATED
         LOG_Init();
+        #endif
 
 #ifndef _WIN32
 	// Windows doesn't have these signals
