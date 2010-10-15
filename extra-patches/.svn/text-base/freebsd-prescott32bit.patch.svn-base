@@ -1,0 +1,15 @@
+Index: Makefile
+===================================================================
+--- Makefile	(revision 442)
++++ Makefile	(working copy)
+@@ -511,8 +511,8 @@
+       -fomit-frame-pointer -fexpensive-optimizations
+   else
+   ifeq ($(ARCH),i386)
+-    RELEASE_CFLAGS=$(BASE_CFLAGS) -DNDEBUG -O3 -mtune=pentiumpro \
+-      -march=pentium -fomit-frame-pointer -pipe -ffast-math \
++    RELEASE_CFLAGS=$(BASE_CFLAGS) -DNDEBUG -O3 \
++      -march=prescott -fomit-frame-pointer -pipe -ffast-math \
+       -falign-loops=2 -falign-jumps=2 -falign-functions=2 \
+       -funroll-loops -fstrength-reduce
+     HAVE_VM_COMPILED=true

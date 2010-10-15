@@ -1,0 +1,82 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 543)
++++ code/server/sv_client.c	(working copy)
+@@ -216,6 +216,20 @@
+ 		}
+ 	}
+ 	
++	// See comment made in SV_UserinfoChanged() regarding handicap.
++	int oldInfoLen = strlen(userinfo);
++	int newInfoLen;
++	while (qtrue) {
++		// Unfortunately the string fuctions such as strlen() and Info_RemoveKey()
++		// are quite expensive for large userinfo strings.  Imagine if someone
++		// bombarded the server with connect packets.  That would result in very bad
++		// server hitches.  We need to fix that.
++		Info_RemoveKey(userinfo, "handicap");
++		newInfoLen = strlen(userinfo);
++		if (oldInfoLen == newInfoLen) { break; } // userinfo wasn't modified.
++		oldInfoLen = newInfoLen;
++	}
++
+ 	//////////////////////////////////////////////////////////////
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+@@ -225,7 +239,13 @@
+ 		ip = "localhost";
+ 	else
+ 		ip = (char *)NET_AdrToString( from );
+-	if( ( strlen( ip ) + strlen( userinfo ) + 4 ) >= MAX_INFO_STRING ) {
++	char *val = Info_ValueForKey(userinfo, "ip");
++	int len;
++	if (val[0])
++		len = strlen(ip) - strlen(val) + strlen(userinfo);
++	else
++		len = strlen(ip) + 2 + 2 + strlen(userinfo);
++	if (len >= MAX_INFO_STRING) {
+ 		NET_OutOfBandPrint( NS_SERVER, from,
+ 			"print\nUserinfo string length exceeded.  "
+ 			"Try removing setu cvars from your config.\n" );
+@@ -1161,6 +1181,21 @@
+ 	int		i;
+ 	int	len;
+ 
++	// In the ugly [commented out] code below, handicap is supposed to be
++	// either missing or a valid int between 1 and 100.
++	// It's safe therefore to stick with that policy and just remove it.
++	// Urban Terror never uses handicap anyways.  Unfortunately it's possible
++	// to have a key such as handicap appear more than once in the userinfo.
++	// So we remove every instance of it.
++	int oldInfoLen = strlen(cl->userinfo);
++	int newInfoLen;
++	while (qtrue) {
++		Info_RemoveKey(cl->userinfo, "handicap");
++		newInfoLen = strlen(cl->userinfo);
++		if (oldInfoLen == newInfoLen) { break; } // userinfo wasn't modified.
++		oldInfoLen = newInfoLen;
++	}
++
+ 	//////////////////////////////////////////////////////////////
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+@@ -1188,6 +1223,11 @@
+ 			cl->rate = 3000;
+ 		}
+ 	}
++
++	// The following block of code is buggy because it may overflow the userinfo string.
++	// For example, suppose the current handicap is "0".  This will set it to "100", which
++	// has 2 extra characters.  There is no check made for userinfo length exceeded.
++	/*
+ 	val = Info_ValueForKey (cl->userinfo, "handicap");
+ 	if (strlen(val)) {
+ 		i = atoi(val);
+@@ -1195,6 +1235,7 @@
+ 			Info_SetValueForKey( cl->userinfo, "handicap", "100" );
+ 		}
+ 	}
++	*/
+ 
+ 	// snaps command
+ 	val = Info_ValueForKey (cl->userinfo, "snaps");

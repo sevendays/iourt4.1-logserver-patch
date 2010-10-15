@@ -1,0 +1,85 @@
+10
+
+dir
+546
+svn://svn.clanwtf.net/repos/ioUrT-server-4.1/code
+svn://svn.clanwtf.net
+
+
+
+2010-10-08T05:49:18.854517Z
+489
+Rambetter
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+780b6ab8-7a3c-df11-9965-003048f8fb46
+
+q3_ui
+dir
+
+asm
+dir
+
+sdl
+dir
+
+SDL12
+dir
+
+jpeg-6
+dir
+
+libs
+dir
+
+libcurl
+dir
+
+AL
+dir
+
+tools
+dir
+
+server
+dir
+
+renderer
+dir
+
+qcommon
+dir
+
+game
+dir
+
+null
+dir
+
+botlib
+dir
+
+cgame
+dir
+
+ui
+dir
+
+client
+dir
+
+sys
+dir
+

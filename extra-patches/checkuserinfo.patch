@@ -1,0 +1,190 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 538)
++++ code/server/sv_client.c	(working copy)
+@@ -159,6 +159,72 @@
+ 
+ /*
+ ==================
++SV_CheckUserinfo
++
++Return codes:
++0 - clean, OK
++1 - illegal characters
++2 - malformed
++==================
++*/
++int SV_CheckUserinfo(char *userinfo) {
++	static	qboolean	charMap[256];
++	static	qboolean	charMapInitialized = qfalse;
++	int			i;
++	char			ch;
++	char			*s;
++
++	if (!(sv_checkUserinfo->integer > 0)) {
++		return 0;
++	}
++
++	if (!charMapInitialized) {
++		// These are characters that are allowed/disallowed to be in cvar keys and values.
++		for (i = 0;   i <= 31;  i++) { charMap[i] = qfalse; }
++		for (i = 32;  i <= 33;  i++) { charMap[i] = qtrue; }
++		charMap[34] = qfalse; // double quote
++		for (i = 35;  i <= 58;  i++) { charMap[i] = qtrue; }
++		charMap[59] = qfalse; // semicolon
++		for (i = 60;  i <= 91;  i++) { charMap[i] = qtrue; }
++		charMap[92] = qfalse; // backslash
++		for (i = 93;  i <= 126; i++) { charMap[i] = qtrue; }
++		for (i = 127; i <= 255; i++) { charMap[i] = qfalse; }
++
++		charMapInitialized = qtrue;
++	}
++
++	while (qtrue) {
++		if (*userinfo == '\0') { return 0; } // Userinfo allowed to be completely empty in fact.
++		if (*userinfo != '\\') { return 2; }
++		userinfo++;
++		// BEGIN: Parse key.
++		s = userinfo;
++		while (qtrue) {
++			ch = *userinfo;
++			if (ch == '\0') { return 2; } // End of userinfo before value (value missing).
++			if (ch == '\\') { break; } // Reached end of key.
++			if (!charMap[ch & 0xff]) { return 1; } // Illegal character in key.
++			userinfo++;
++		}
++		if (userinfo - s <= 0) { return 2; } // Key has zero length.
++		// END: Parse key.
++		userinfo++; // We know that the current character was a '\' because of the break above.
++		// BEGIN: Parse value.
++		s = userinfo;
++		while (qtrue) {
++			ch = *userinfo;
++			if (ch == '\0' || ch == '\\') { break; }
++			if (!charMap[ch & 0xff]) { return 1; } // Illegal character in value.
++			userinfo++;
++		}
++		if (userinfo - s <= 0) { return 2; } // Value has zero length.
++		// END: Parse value.
++		// We are currently at the end of string or at a '\', so we'll go back to start of main loop.
++	}
++}
++
++/*
++==================
+ SV_DirectConnect
+ 
+ A "connect" OOB command has been received
+@@ -187,7 +253,38 @@
+ 
+ 	Com_DPrintf ("SVC_DirectConnect ()\n");
+ 
++	userinfo[sizeof(userinfo) - 1] = 0xff; // Set end of string to any nonzero value for checking overflow.
+ 	Q_strncpyz( userinfo, Cmd_Argv(1), sizeof(userinfo) );
++	if (sv_checkUserinfo->integer > 0) {
++		if (userinfo[sizeof(userinfo) - 1] == '\0') { // Likely userinfo overflow.
++			// Based on my experiments, Cmd_Argv(1) will never reach within the ballpark of MAX_INFO_STRING,
++			// probably due to some limitation such as the size of UDP packet buffers.
++			// Make the check here anyhow for code correctness.  We check the length of Cmd_Argv(1) in this
++			// complex "if" statement to avoid the strlen() computation which is relatively expensive on
++			// a long string such as a userinfo.
++			if (strlen(Cmd_Argv(1)) >= sizeof(userinfo)) {
++				NET_OutOfBandPrint(NS_SERVER, from,
++						"print\nUserinfo string length exceeded.  "
++						"Try removing setu cvars from your config.\n");
++				return;
++			}
++		}
++		int ret = SV_CheckUserinfo(userinfo);
++		if (ret == 1) {
++			Com_DPrintf("Illegal characters in connect userinfo string from %s, userinfo follows:\n",
++					NET_AdrToString(from));
++			Com_DPrintf("%s\n", userinfo);
++			NET_OutOfBandPrint(NS_SERVER, from, "print\nIllegal characters in userinfo string.\n");
++			return;
++		}
++		if (ret != 0) {
++			Com_DPrintf("Malformed connect userinfo string from %s, userinfo follows:\n",
++					NET_AdrToString(from));
++			Com_DPrintf("%s\n", userinfo);
++			NET_OutOfBandPrint(NS_SERVER, from, "print\nMalformed userinfo string.\n");
++			return;
++		}
++	}
+ 
+ 	version = atoi( Info_ValueForKey( userinfo, "protocol" ) );
+ 	if ( version != PROTOCOL_VERSION ) {
+@@ -1251,7 +1348,34 @@
+ 	cl->userinfobuffer[0]=0;
+ 	cl->nextReliableUserTime = svs.time + 5000;
+ 
++	cl->userinfo[sizeof(cl->userinfo) - 1] = 0xff; // Set end of string to any nonzero value for checking overflow.
+ 	Q_strncpyz( cl->userinfo, Cmd_Argv(1), sizeof(cl->userinfo) );
++	if (sv_checkUserinfo->integer > 0) {
++		if (cl->userinfo[sizeof(cl->userinfo) - 1] == '\0') { // Likely userinfo overflow.
++			// Cmd_Argv(1) will never reach within the ballpark of MAX_INFO_STRING based on experminets,
++			// but have this code here for complete correctness.  Avoid expensive strlen() check in majority
++			// of cases.
++			if (strlen(Cmd_Argv(1)) >= sizeof(cl->userinfo)) {
++				SV_DropClient(cl, "userinfo string length exceeded");
++				return;
++			}
++		}
++		int ret = SV_CheckUserinfo(cl->userinfo);
++		if (ret == 1) {
++			Com_DPrintf("Illegal characters in userinfo string for %s (client #%i, %s), userinfo follows:\n",
++					cl->name, cl - svs.clients, NET_AdrToString(cl->netchan.remoteAddress));
++			Com_DPrintf("%s\n", cl->userinfo);
++			SV_DropClient(cl, "illegal characters in userinfo");
++			return;
++		}
++		if (ret != 0) {
++			Com_DPrintf("Malformed userinfo string for %s (client #%i, %s), userinfo follows:\n",
++					cl->name, cl - svs.clients, NET_AdrToString(cl->netchan.remoteAddress));
++			Com_DPrintf("%s\n", cl->userinfo);
++			SV_DropClient(cl, "malformed userinfo");
++			return;
++		}
++	}
+ 
+ 	SV_UserinfoChanged( cl );
+ 	// call prog code to allow overrides
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 538)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_checkUserinfo;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 538)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_checkUserinfo = Cvar_Get ("sv_checkUserinfo", "0", CVAR_ARCHIVE );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 538)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,8 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_checkUserinfo;
++
+ /*
+ =============================================================================
+ 

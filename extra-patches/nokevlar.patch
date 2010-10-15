@@ -1,0 +1,286 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 511)
++++ code/server/sv_client.c	(working copy)
+@@ -159,6 +159,216 @@
+ 
+ /*
+ ==================
++SV_CheckValidGear
++
++Checks to see if a player's gear is valid.  If it's invalid, zero (which is a false value) is
++returned.  If the gear is valid, the value returned is the number of extras the player has.
++A secondary weapon is one extra, nades is one extra.  Each item counts as an extra as
++well.  The number of extras for a valid loadout is between one and three, inclusive.
++(In addition to that requirement, at least one item must be selected.)
++The problem with gear is that invalid gear will cause the game engine to give the default
++loadout without changing the gear in the userinfo.  Therefore, if we want to artificially limit
++gear, we need to detect invalid gear strings.
++==================
++*/
++int SV_CheckValidGear(const char *gear) {
++	if (strlen(gear) != 7) {
++		return 0;
++	}
++
++	// The first character is the sidearm.  It must be one of the following:
++	//   'F' = Beretta
++	//   'G' = DE
++	// The second character is the primary weapon.  It must be one of the following:
++	//   'M' = G36
++	//   'a' = AK103
++	//   'L' = LR300
++	//   'K' = nade launcher
++	//   'N' = PSG-1
++	//   'Z' = SR8
++	//   'c' = Negev
++	//   'e' = M4
++	//   'H' = Spas
++	//   'I' = Mp5k
++	//   'J' = Ump45
++	// The third character is the seconday weapon.  It must be one of the following:
++	//   'A' = empty
++	//   'H' = Spas
++	//   'I' = Mp5k
++	//   'J' = Ump45
++	// The fourth character is the grenade.  It must be one of the following:
++	//   'A' = empty
++	//   'O' = HE Grenade
++	//   'Q' = Smoke Grenade
++	// The last 3 characters are the items.  No item may be repeated more than once except 'A'.
++	// All of the 'A' items must be at the very end of the string.
++	//   'A' = empty
++	//   'R' = kevlar
++	//   'S' = tac goggles
++	//   'T' = medkit
++	//   'U' = silencer
++	//   'V' = laser
++	//   'W' = helmet
++	//   'X' = extra ammo
++	// Other rules:
++	// - No secondary weapon with Negev.
++	// - Counting secondary as 1, nade as 1, and item as 1, max total count allowed is 3.
++	// - Minimum one item.
++
++	int		extrasCount = 0;	// counts the secondary, nade, and items
++	int		itemCount = 0;		// just itmes
++	int		items = 0x00;		// bits representing items
++	char		*pistols = "FG";
++	char		*primaries = "MaLKNZceHIJ";
++	char		*secondaries = "AHIJ";
++	char		*nades = "AOQ";
++	qboolean	negev = qfalse;
++	qboolean	emptyItemSeen = qfalse;
++	int		i, itemBit;
++
++	i = strlen(pistols);
++	while (qtrue) {
++		if (--i < 0) { return 0; }
++		if (gear[0] == pistols[i]) { break; }
++	}
++	i = strlen(primaries);
++	while (qtrue) {
++		if (--i < 0) { return 0; }
++		if (gear[1] == primaries[i]) {
++			if (gear[1] == 'c') { negev = qtrue; }
++			break;
++		}
++	}
++	i = strlen(secondaries);
++	while (qtrue) {
++		if (--i < 0) { return 0; }
++		if (gear[2] == secondaries[i]) {
++			if (gear[2] != 'A') { extrasCount++; }
++			break;
++		}
++	}
++	if (negev && extrasCount) { return 0; }
++	i = strlen(nades);
++	while (qtrue) {
++		if (--i < 0) { return 0; }
++		if (gear[3] == nades[i]) {
++			if (gear[3] != 'A') { extrasCount++; }
++			break;
++		}
++	}
++	for (i = 4; i < 7; i++) {
++		if (gear[i] == 'A') {
++			emptyItemSeen = qtrue;
++			continue;
++		}
++		if (!('R' <= gear[i] && gear[i] <= 'X')) {
++			return 0; // Unrecognized item.
++		}
++		if (emptyItemSeen) {
++			return 0; // Real item after empty item.
++		}
++		itemBit = 0x01 << (gear[i] - 'R');
++		if (items & itemBit) {
++			return 0; // Item appeared a second time.
++		}
++		itemCount++;
++		extrasCount++;
++		items |= itemBit;
++	}
++	if (!itemCount) {
++		return 0; // Must have at least one item.
++		// This condition is actually handled when we return extrasCount,
++		// but I add it here for clarity.
++	}
++	if (extrasCount > 3) {
++		return 0;
++	}
++	return extrasCount;
++}
++
++/*
++==================
++SV_ConditionalNoKevlar
++
++If sv_noKevlar is set to a nonzero positive value, removes kevlar from the player's
++userinfo string.  If the gear is invalid to begin with, gives the player the default
++loadout but without kevlar.  Tries to give the player medkit if sv_noKevlar is set.
++
++The return value may be somewhat cryptic.  It returns false when we need to kick this
++player because their userinfo string exceeded the maximum length.
++==================
++*/
++qboolean SV_ConditionalNoKevlar(char *userinfo) {
++	char	*gearStr;
++	int    	extrasCount, len, items, i, j;
++	char	gear[8];
++
++	if (sv_noKevlar-> integer > 0) {
++		gearStr = Info_ValueForKey(userinfo, "gear");
++		extrasCount = SV_CheckValidGear(gearStr);
++		if (!extrasCount) {
++			Com_DPrintf("Player with invalid gear \"%s\"\n", gearStr);
++			// FLHARWA is the default gear the client gives you when you start out.
++			// The default the server gives you in case yours is invalid is the same as above
++			// only minus the Spas.  So that leaves FLAARWA.  We take away the kevlar
++			// and add medkit to get FLAATWA.
++			if (gearStr[0])
++				len = 7 - strlen(gearStr) + strlen(userinfo);
++			else
++				len = 7 + 2 + 4 + strlen(userinfo);
++			if (len >= MAX_INFO_STRING) {
++				return qfalse;
++			}
++			Info_SetValueForKey(userinfo, "gear", "FLAATWA");
++			return qtrue;
++		}
++		// Items:
++		// 0x00 'A' = empty
++		// 0x01 'R' = kevlar
++		// 0x02 'S' = tac goggles
++		// 0x04 'T' = medkit
++		// 0x08 'U' = silencer
++		// 0x10 'V' = laser
++		// 0x20 'W' = helmet
++		// 0x40 'X' = extra ammo
++		items = 0x00;
++		for (i = 0; i < 4; i++) { gear[i] = gearStr[i]; } // Copy guns and nades.
++		for (i = 4; i < 7; i++) {
++			if ('R' <= gearStr[i] && gearStr[i] <= 'X') { // Or check that it isn't 'A'.
++				items |= 0x01 << (gearStr[i] - 'R');
++			}
++		}
++		if (items & 0x01) { // Had kevlar.
++			items &= (~0x01); // Remove kevlar.
++			extrasCount--;
++		}
++		if (extrasCount < 3) {
++			if (!(items & 0x04)) { // No medkit.
++				// Since this "no kevlar" patch is used on jump servers mostly,
++				// we'll equip the player with a medkit.
++				// IMPORTANT: If you remove this code, make sure you do a check
++				// that there is at least one item ('R' through 'X') present.
++				items |= 0x04;
++				extrasCount++;
++			}
++		}
++		i = 4;
++		for (j = 0; j < 7; j++) {
++			if ((items & (0x01 << j)) != 0) {
++				gear[i++] = 'R' + j;
++			}
++		}
++		while (i < 7) {
++			gear[i++] = 'A';
++		}
++		gear[i] = '\0';
++		Info_SetValueForKey(userinfo, "gear", gear);
++	}
++	return qtrue;
++}
++
++/*
++==================
+ SV_DirectConnect
+ 
+ A "connect" OOB command has been received
+@@ -220,6 +430,13 @@
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+ 
++	if (!SV_ConditionalNoKevlar(userinfo)) {
++		NET_OutOfBandPrint(NS_SERVER, from,
++			"print\nUserinfo string length exceeded.  "
++			"Try removing setu cvars from your config.\n");
++		return;
++	}
++
+ 	// don't let "ip" overflow userinfo string
+ 	if ( NET_IsLocalAddress (from) )
+ 		ip = "localhost";
+@@ -1210,6 +1427,11 @@
+ 		cl->snapshotMsec = 50;
+ 	}
+ 	
++	if (!SV_ConditionalNoKevlar(cl->userinfo)) {
++		SV_DropClient(cl, "userinfo string length exceeded");
++		return;
++	}          
++
+ 	// TTimo
+ 	// maintain the IP information
+ 	// the banning code relies on this being consistently present
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 511)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_noKevlar;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 511)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_noKevlar = Cvar_Get ("sv_noKevlar", "0", CVAR_INIT );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 511)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,8 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_noKevlar;
++
+ /*
+ =============================================================================
+ 

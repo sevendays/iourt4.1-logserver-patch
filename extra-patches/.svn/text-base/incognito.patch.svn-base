@@ -1,0 +1,260 @@
+Index: code/server/sv_ccmds.c
+===================================================================
+--- code/server/sv_ccmds.c	(revision 516)
++++ code/server/sv_ccmds.c	(working copy)
+@@ -763,6 +763,96 @@
+ // separator for forcecvar.patch and incognito.patch
+ ////////////////////////////////////////////////////
+ 
++/*
++==================
++SV_SendClientCommand_f
++
++Send a reliable command to a specific client.
++==================
++*/
++static void SV_SendClientCommand_f(void) {
++	client_t	*cl;
++	char		*cmd;
++
++	// Make sure server is running.
++	if (!com_sv_running->integer) {
++		Com_Printf("Server is not running.\n");
++		return;
++	}
++
++	if (Cmd_Argc() < 3 || strlen(Cmd_Argv(2)) == 0) {
++		Com_Printf("Usage: sendclientcommand <player name> <command>\nPlayer may be 'all' or 'allbots'\n");
++		return;
++	}
++
++	cl = SV_GetPlayerByHandle();
++	cmd = Cmd_ArgsFromRaw(2);
++
++	if (!cl) {
++		if (!Q_stricmp(Cmd_Argv(1), "all")) {
++			SV_SendServerCommand(NULL, "%s", cmd);
++		}
++		return;
++	}
++
++	SV_SendServerCommand(cl, "%s", cmd);
++}
++
++
++/*
++==================
++SV_Incognito_f
++
++Pretend that you disconnect, but really go to spec.
++==================
++*/
++static void SV_Incognito_f(void) {
++	client_t	*cl;
++	int		i;
++	char		cmd[64];
++
++	// Make sure server is running.
++	if (!com_sv_running->integer) {
++		Com_Printf("Server is not running.\n");
++		return;
++	}
++
++	if (!in_redirect) {
++		Com_Printf("The incognito command can only be run through rcon\n");
++		return;
++	}
++
++	if (Cmd_Argc() != 1) {
++		Com_Printf("No arguments expected for incognito command\n");
++		return;
++	}
++
++	// Find the person connected to server who issued the incognito command.
++	for (i = 0, cl = svs.clients;; i++, cl++) {
++		if (i == sv_maxclients->integer) {
++			cl = NULL;
++			break;
++		}
++		if (cl->state >= CS_ACTIVE && NET_CompareAdr(cl->netchan.remoteAddress, svs.redirectAddress)) {
++			break; // found
++		}
++	}
++
++	if (cl != NULL) {
++		sv.incognitoJoinSpec = qtrue;
++		Com_sprintf(cmd, sizeof(cmd), "forceteam %i spectator\n", i);
++		Cmd_ExecuteString(cmd);
++		sv.incognitoJoinSpec = qfalse;
++		SV_SendServerCommand(NULL, "print \"%s" S_COLOR_WHITE " disconnected\n\"", cl->name); // color OK
++		Com_sprintf(cmd, sizeof(cmd), "sendclientcommand all cs %i \"\"\n", 548 + i);
++		Cmd_ExecuteString(cmd);
++	}
++	else {
++		Com_Printf("Must be connected to server for incognito to work\n");
++	}
++
++}
++
+ //===========================================================
+ 
+ /*
+@@ -804,7 +894,8 @@
+ 	////////////////////////////////////////////////////
+ 	// separator for forcecvar.patch and incognito.patch
+ 	////////////////////////////////////////////////////
+-
++	Cmd_AddCommand ("sendclientcommand", SV_SendClientCommand_f);
++	Cmd_AddCommand ("incognito", SV_Incognito_f);
+ }
+ 
+ /*
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 516)
++++ code/server/server.h	(working copy)
+@@ -80,6 +80,8 @@
+ 	int				restartTime;
+ 	int				time;
+ 
++	qboolean			incognitoJoinSpec;
++
+ 	/////////////////////////////////////////////////////////
+ 	// separator for incognito.patch and specchatglobal.patch
+ 	/////////////////////////////////////////////////////////
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 516)
++++ code/server/sv_main.c	(working copy)
+@@ -188,6 +188,14 @@
+ 		return;
+ 	}
+ 
++	if (sv.incognitoJoinSpec &&
++			cl == NULL &&
++			(!Q_strncmp((char *) message, "print \"", 7)) &&
++			msglen >= 27 + 7 &&
++			!strcmp("^7 joined the spectators.\n\"", ((char *) message) + msglen - 27)) {
++		return;
++	}
++
+ 	/////////////////////////////////////////////////////////
+ 	// separator for incognito.patch and specchatglobal.patch
+ 	/////////////////////////////////////////////////////////
+Index: code/qcommon/cmd.c
+===================================================================
+--- code/qcommon/cmd.c	(revision 516)
++++ code/qcommon/cmd.c	(working copy)
+@@ -403,6 +403,60 @@
+ 
+ /*
+ ============
++Cmd_ArgsFromRaw
++============
++*/
++char *Cmd_ArgsFromRaw(int arg) {
++	static	char	cmd_args_raw[BIG_INFO_STRING];
++	char		*remaining_text;
++	int		argc = 0;
++	qboolean	ignoreQuotes = qfalse;
++
++	cmd_args_raw[0] = '\0';
++	if (arg < 0) { arg = 0; }
++	remaining_text = cmd_cmd;
++
++	while (qtrue) {
++		while (qtrue) {
++			while (*remaining_text && *remaining_text <= ' ') { remaining_text++; }
++			if (!*remaining_text) { return cmd_args_raw; }
++			if (remaining_text[0] == '/' && remaining_text[1] == '/') {
++				return cmd_args_raw; }
++			if (remaining_text[0] == '/' && remaining_text[1] == '*') {
++				while (*remaining_text &&
++					(remaining_text[0] != '*' || remaining_text[1] != '/')) {
++					remaining_text++;
++				}
++				if (!*remaining_text) { return cmd_args_raw; }
++				remaining_text += 2;
++			}
++			else { break; }
++		}
++		if (argc == arg) { break; }
++		if (!ignoreQuotes && *remaining_text == '"') {
++			argc++;
++			remaining_text++;
++			while (*remaining_text && *remaining_text != '"') { remaining_text++; }
++			if (!*remaining_text) { return cmd_args_raw; }
++			remaining_text++;
++			continue;
++		}
++		argc++;
++		while (*remaining_text > ' ') {
++			if (!ignoreQuotes && *remaining_text == '"') { break; }
++			if (remaining_text[0] == '/' && remaining_text[1] == '/') { break; }
++			if (remaining_text[0] == '/' && remaining_text[1] == '*') { break; }
++			remaining_text++;
++		}
++		if (!*remaining_text) { return cmd_args_raw; }
++	}
++
++	Q_strncpyz(cmd_args_raw, remaining_text, sizeof(cmd_args_raw));
++	return cmd_args_raw;
++}
++
++/*
++============
+ Cmd_ArgsBuffer
+ 
+ The interpreted versions use this because
+Index: code/qcommon/qcommon.h
+===================================================================
+--- code/qcommon/qcommon.h	(revision 516)
++++ code/qcommon/qcommon.h	(working copy)
+@@ -405,6 +405,7 @@
+ void	Cmd_ArgvBuffer( int arg, char *buffer, int bufferLength );
+ char	*Cmd_Args (void);
+ char	*Cmd_ArgsFrom( int arg );
++char	*Cmd_ArgsFromRaw( int arg );
+ void	Cmd_ArgsBuffer( char *buffer, int bufferLength );
+ char	*Cmd_Cmd (void);
+ void	Cmd_Args_Sanitize( void );
+@@ -747,8 +748,10 @@
+ char		*CopyString( const char *in );
+ void		Info_Print( const char *s );
+ 
++qboolean	in_redirect;
+ void		Com_BeginRedirect (char *buffer, int buffersize, void (*flush)(char *));
+ void		Com_EndRedirect( void );
++
+ void 		QDECL Com_Printf( const char *fmt, ... ) __attribute__ ((format (printf, 1, 2)));
+ void 		QDECL Com_DPrintf( const char *fmt, ... ) __attribute__ ((format (printf, 1, 2)));
+ void 		QDECL Com_Error( int code, const char *fmt, ... ) __attribute__ ((format (printf, 2, 3)));
+Index: code/qcommon/common.c
+===================================================================
+--- code/qcommon/common.c	(revision 516)
++++ code/qcommon/common.c	(working copy)
+@@ -108,6 +108,7 @@
+ 
+ void Com_BeginRedirect (char *buffer, int buffersize, void (*flush)( char *) )
+ {
++	in_redirect = qtrue;
+ 	if (!buffer || !buffersize || !flush)
+ 		return;
+ 	rd_buffer = buffer;
+@@ -119,6 +120,7 @@
+ 
+ void Com_EndRedirect (void)
+ {
++	in_redirect = qfalse;
+ 	if ( rd_flush ) {
+ 		rd_flush(rd_buffer);
+ 	}
+@@ -2498,6 +2500,8 @@
+ 		Sys_Error ("Error during initialization");
+ 	}
+ 
++	in_redirect = qfalse;
++
+ 	// Clear queues
+ 	Com_Memset( &eventQueue[ 0 ], 0, MAX_QUEUED_EVENTS * sizeof( sysEvent_t ) );
+ 	Com_Memset( &sys_packetReceived[ 0 ], 0, MAX_MSGLEN * sizeof( byte ) );

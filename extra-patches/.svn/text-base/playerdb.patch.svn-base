@@ -1,0 +1,627 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 531)
++++ code/server/sv_client.c	(working copy)
+@@ -78,9 +78,51 @@
+ 		challenge->firstTime = svs.time;
+ 		challenge->time = svs.time;
+ 		challenge->connected = qfalse;
++		challenge->authChallengesSent = 0;
++		challenge->permabanned = qfalse;
+ 		i = oldest;
+ 	}
+ 
++	// If the playerdb host is specified and if ban IDs are specified, we will choose the custom
++	// playerdb auth server, even if resolution of the playerdb host was unsuccessful.
++	if (sv_playerDBHost->string[0] && sv_playerDBBanIDs->string[0]) {
++		SV_ResolvePlayerDB();
++		qboolean chalAuthTimedOut = qfalse;
++		// If the challenge is already marked as permabanned, we've already sent a challengeResponse
++		// to the client.  So they may be asking for it again because they didn't receive it, or it's
++		// just bad timing.
++		if (challenge->permabanned || svs.playerDatabaseAddress.type == NA_BAD || Sys_IsLANAddress(from) ||
++				(!(from.type == NA_IP /* || from.type == NA_IP6 */)) || // Not handling IPv6 yet.
++				(chalAuthTimedOut = (svs.time - challenge->firstTime > PLAYERDB_CHALLENGEAUTH_TIMEOUT))) {
++			if (chalAuthTimedOut) {
++				Com_DPrintf("Challenge auth timed out\n");
++			}
++			// Let them in immediately, even if they are banned.  We want their userinfo string
++			// before we drop them.  Also there is a chance for them to bypass the ban with a correct
++			// "permabanbypass" in their userinfo string.
++			challenge->pingTime = svs.time;
++			NET_OutOfBandPrint( NS_SERVER, from, "challengeResponse %i", challenge->challenge );
++		}
++		else if (challenge->authChallengesSent < 2) { // Never send more than 2 auths per challenge.
++			// Note: There is still a possibility of flood attacks here.  If a client sends thousands of
++			// getchallenge packets, each with a different source port, this will cause that many auths
++			// to be sent.  Note that it's easy to forge the source address on a UDP packet.
++			Com_DPrintf("Sending authorizePlayer packet to playerdb for client address %i.%i.%i.%i\n",
++					from.ip[0], from.ip[1], from.ip[2], from.ip[3]);
++			NET_OutOfBandPrint(NS_SERVER,
++				svs.playerDatabaseAddress,
++				"playerDBRequest\n%s\nauthorizePlayer:%08x\n%s\n%i.%i.%i.%i\n",
++				svs.playerDatabasePassword,
++				0x7fffffff & (challenge->challenge),
++				sv_playerDBBanIDs->string,
++				from.ip[0], from.ip[1], from.ip[2], from.ip[3]);
++			challenge->authChallengesSent++;
++		}
++		return;
++	}
++	// Otherwise the playerdb stuff isn't enabled, so we should fall through to use
++	// the legacy code.
++
+ 		challenge->pingTime = svs.time;
+ 		NET_OutOfBandPrint( NS_SERVER, from, "challengeResponse %i", challenge->challenge );
+ 		return;
+@@ -159,6 +201,93 @@
+ 
+ /*
+ ==================
++SV_ApproveGuid
++
++Returns a false value if and only if a client with this cl_guid
++should not be allowed to enter the server.  The check is only made
++if sv_requireValidGuid is nonzero positive, otherwise every guid passes.
++
++A cl_guid string must have length 32 and consist of characters
++'0' through '9' and 'A' through 'F'.
++==================
++*/
++qboolean SV_ApproveGuid( const char *guid) {
++	int	i;
++	char	c;
++	int	length;
++
++	if (sv_requireValidGuid->integer > 0) {
++		length = strlen(guid); // We could avoid this extra linear-time computation with more complex code.
++		if (length != 32) { return qfalse; }
++		for (i = 31; i >= 0;) {
++			c = guid[i--];
++			if (!(('0' <= c && c <= '9') ||
++				('A' <= c && c <= 'F'))) {
++				return qfalse;
++			}
++		}
++	}
++	return qtrue;
++}
++
++/*
++==================
++SV_ResolvePlayerDB
++
++sv_playerDBHost->string is not touched by this function.  svs.playerDatabaseAddress.type
++will be set to NA_BAD when resolution fails or when sv_playerDBHost is empty.
++==================
++*/
++void SV_ResolvePlayerDB( void ) {
++	int	res;
++
++	if (sv_playerDBHost->modified) { // This will be true when server starts up even if sv_playerDBHost is empty.
++		sv_playerDBHost->modified = qfalse;
++		if (sv_playerDBHost->string[0]) {
++			Com_Printf("Resolving playerdb server address %s\n", sv_playerDBHost->string);
++			res = NET_StringToAdr(sv_playerDBHost->string, &svs.playerDatabaseAddress);
++			if (!res) {
++				// svs.playerDatabaseAddress.type will be set to NA_BAD by NET_StringToAdr().
++				Com_Printf("Couldn't resolve playerdb address: %s\n", sv_playerDBHost->string);
++				return;
++			}
++			if (res == 2) {
++				// Set the default port since it was not specified.
++				svs.playerDatabaseAddress.port = BigShort(10030);
++			}
++			Com_Printf("%s (playerdb) resolved to %s\n", sv_playerDBHost->string, NET_AdrToString(svs.playerDatabaseAddress));
++		}
++		else {
++			svs.playerDatabaseAddress.type = NA_BAD;
++		}
++	}
++}
++
++/*
++==================
++SV_SendUserinfoToPlayerDBConditionally
++
++Will only send a packet to the player database if sv_playerDBUserInfo is nonzero positive and
++if svs.playerDatabaseAddress.type is not NA_BAD after a resolution attempt.  If the player
++database password is empty a packet will still be sent.
++==================
++*/
++void SV_SendUserinfoToPlayerDBConditionally(const char *userinfo) {
++	if (sv_playerDBUserInfo->integer > 0) {
++		SV_ResolvePlayerDB();
++		if (svs.playerDatabaseAddress.type != NA_BAD) {
++			Com_DPrintf("Sending clientUserInfo packet to playerdb\n");
++			NET_OutOfBandPrint(NS_SERVER,
++				svs.playerDatabaseAddress,
++				"playerDBRequest\n%s\nclientUserInfo\n%s\n",
++				svs.playerDatabasePassword,
++				userinfo);
++		}
++	}
++}
++
++/*
++==================
+ SV_DirectConnect
+ 
+ A "connect" OOB command has been received
+@@ -249,6 +378,8 @@
+ 			return;
+ 		}
+ 
++		qboolean firstConnect = !svs.challenges[i].connected;
++
+ 		///////////////////////////////////////////////////////
+ 		// separator for playerdb.patch and challengeping.patch
+ 		///////////////////////////////////////////////////////
+@@ -269,6 +400,39 @@
+ 
+ 		// never reject a LAN client based on ping
+ 		if ( !Sys_IsLANAddress( from ) ) {
++
++			// The player database won't be able to make sense of a userinfo with an invalid
++			// guid (will just drop it), so perform this check before sending the userinfo.
++			// SV_ApproveGuid already checks for sv_requireValidGuid.
++			if (!SV_ApproveGuid(Info_ValueForKey(userinfo, "cl_guid"))) {
++				NET_OutOfBandPrint(NS_SERVER, from, "print\nGet legit, bro.\n");
++				Com_DPrintf("Invalid cl_guid, rejected connect from %s\n", NET_AdrToString(from));
++				return;
++			}
++
++			// Send a packet to the player database with the userinfo string at
++			// the very earliest opportunity, before we potentially kick the player
++			// for various reasons.  We want to have a record of the player connecting
++			// even if they're not able to connect because of being being banned or
++			// being blocked due to the qport 1337 logic.
++			// There is a possibility of a flood attack by sending a bunch of connect packets
++			// for the same challenge.  That's why we send only one userinfo per challenge.
++			if (firstConnect) {
++				SV_SendUserinfoToPlayerDBConditionally(userinfo);
++			}
++
++			if (svs.challenges[i].permabanned) {
++				if (sv_permaBanBypass->string[0] &&
++						!strcmp(Info_ValueForKey(userinfo, "permabanbypass"), sv_permaBanBypass->string)) {
++					svs.challenges[i].permabanned = qfalse;
++				}
++				else {
++					NET_OutOfBandPrint(NS_SERVER, svs.challenges[i].adr, "print\nPermabanned.\n" );
++					Com_DPrintf("Permabanned\n");
++					return;
++				}
++			}
++
+ 			if ( sv_minPing->value && ping < sv_minPing->value ) {
+ 				// don't let them keep trying until they get a big delay
+ 				NET_OutOfBandPrint( NS_SERVER, from, "print\nServer is for high pings only\n" );
+@@ -1234,6 +1398,10 @@
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
+ 
++	if (!Sys_IsLANAddress(cl->netchan.remoteAddress)) {
++		SV_SendUserinfoToPlayerDBConditionally(cl->userinfo);
++	}
++
+ }
+ 
+ 
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 531)
++++ code/server/server.h	(working copy)
+@@ -188,6 +188,8 @@
+ 
+ #define	AUTHORIZE_TIMEOUT	5000
+ 
++#define	PLAYERDB_CHALLENGEAUTH_TIMEOUT	5000
++
+ typedef struct {
+ 	netadr_t	adr;
+ 	int			challenge;
+@@ -195,11 +197,14 @@
+ 	int			pingTime;			// time the challenge response was sent to client
+ 	int			firstTime;			// time the adr was first used, for authorize timeout checks
+ 	qboolean	connected;
++	int		authChallengesSent;
++	qboolean	permabanned;
+ } challenge_t;
+ 
+ 
+ #define	MAX_MASTERS	8				// max recipients for heartbeat packets
+ 
++#define	MAX_PLAYERDB_PASSWORD_STRING	32
+ 
+ // this structure will be cleared only when the game dll changes
+ typedef struct {
+@@ -223,6 +228,13 @@
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
+ 
++	netadr_t	playerDatabaseAddress;			// holds resolution of sv_playerDBHost
++
++	char		playerDatabasePassword[MAX_PLAYERDB_PASSWORD_STRING];
++								// holds value of sv_playerDBPassword so that
++								// we can always set sv_playerDBPassword to the
++								// empty string, we don't want people with rcon
++								// knowing this sensitive information
+ } serverStatic_t;
+ 
+ //=============================================================================
+@@ -261,6 +273,13 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_requireValidGuid;
++extern	cvar_t	*sv_playerDBHost;
++extern	cvar_t	*sv_playerDBPassword;
++extern	cvar_t	*sv_playerDBUserInfo;
++extern	cvar_t	*sv_playerDBBanIDs;
++extern	cvar_t	*sv_permaBanBypass;
++
+ //===========================================================
+ 
+ //
+@@ -293,8 +312,8 @@
+ void SV_ChangeMaxClients( void );
+ void SV_SpawnServer( char *server, qboolean killBots );
+ 
++void SV_ResolvePlayerDB( void );
+ 
+-
+ //
+ // sv_client.c
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 531)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,13 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_requireValidGuid = Cvar_Get ("sv_requireValidGuid", "0", CVAR_ARCHIVE );
++	sv_playerDBHost = Cvar_Get ("sv_playerDBHost", "", CVAR_ARCHIVE );
++	sv_playerDBPassword = Cvar_Get ("sv_playerDBPassword", "", CVAR_TEMP );
++	sv_playerDBUserInfo = Cvar_Get ("sv_playerDBUserInfo", "0", CVAR_ARCHIVE );
++	sv_playerDBBanIDs = Cvar_Get ("sv_playerDBBanIDs", "", CVAR_ARCHIVE );
++	sv_permaBanBypass = Cvar_Get ("sv_permaBanBypass", "", CVAR_TEMP );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 531)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,14 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_requireValidGuid;	// whether client userinfo must contain a cl_guid, string of length 32 consisting
++				// of characters '0' through '9' and 'A' through 'F', default 0 don't require
++cvar_t	*sv_playerDBHost;	// hostname or IP address for the player database, e.g. "localhost:10030"
++cvar_t	*sv_playerDBPassword;	// password for the player database ban server system
++cvar_t	*sv_playerDBUserInfo;	// whether to send client userinfo strings to player database, default 0 don't send
++cvar_t	*sv_playerDBBanIDs;	// comma separated list of banlists to check with player database
++cvar_t	*sv_permaBanBypass;	// password for avoiding permaban system, client should use "/setu permabanbypass <password>"
++
+ /*
+ =============================================================================
+ 
+@@ -509,6 +517,168 @@
+ }
+ 
+ /*
++===============
++SVC_AuthorizePlayer
++
++Deal with packets from the player database ban server.
++===============
++*/
++void SVC_AuthorizePlayer(netadr_t from)
++{
++	char		*arg1;
++	char		*arg2;
++	char		*arg3;
++	int		i;
++	char		ch;
++	netadr_t	clientAddr;
++	int		challenge;
++	qboolean	denied;
++	client_t	*cl;
++	const	char	*command = "authorizePlayer:xxxxxxxx";
++
++	// This is probably a redundant check with the compare of addresses below.
++	if (!sv_playerDBHost->string[0]) {
++		Com_DPrintf("playerDBResponse packet received from %s but no sv_playerDBHost set\n",
++			NET_AdrToString(from));
++		return;
++	}
++
++	// See if this packet is from the player database server.  Drop it if not.
++	// Note that it's very easy to spoof the source address of a UDP packet, so
++	// we use the challenge concept for further protection.
++	// Note that NET_CompareAdr() does compare the .type of the addresses.
++	if (!NET_CompareAdr(from, svs.playerDatabaseAddress)) {
++		Com_DPrintf("playerDBResponse packet received from invalid playerdb server: %s\n",
++			NET_AdrToString(from));
++		return;
++	}
++
++	arg1 = Cmd_Argv(1);
++	if (strlen(command) != strlen(arg1) ||
++			Q_strncmp(command, arg1, 16)) { // Check up to and including the ':'.
++		Com_DPrintf("First argument of playerDBResponse packet was \"%s\", not of the form \"%s\"\n",
++				arg1, command);
++		return;
++	}
++	challenge = 0;
++	for (i = 0; i < 8; i++) {
++		ch = arg1[16 + i];
++		if ('0' <= ch && ch <= '9') {
++			challenge |= (ch - '0') << ((7 - i) << 2);
++		}
++		else if ('a' <= ch && ch <= 'f') {
++			challenge |= (ch - 'a' + 10) << ((7 - i) << 2);
++		}
++		else {
++			Com_DPrintf("Invalid challenge \"%s\" in playerDBResponse authorizePlayer packet\n", arg1 + 16);
++			return;
++		}
++	}
++	Com_DPrintf("SVC_AuthorizePlayer: parsed hex challenge %s to be %i\n", arg1 + 16, challenge);
++
++	arg2 = Cmd_Argv(2);
++	// Make sure this is an IP address (so that DNS lookups won't happen below).
++	if (!NET_IsIP(arg2)) { // Does not currently handle IPv6 addresses.
++		Com_DPrintf("Invalid IP address in playerDBResponse packet: %s\n", arg2);
++		return;	
++	}
++
++	if (!NET_StringToAdr(arg2, &clientAddr)) {
++		// This condition should never happen because of the check above.
++		Com_DPrintf("Invalid IP address in playerDBResponse packet: %s\n", arg2);
++		return;
++	}
++
++	// This is a freak condition that will only happen if someone starts sending random crap
++	// from the auth server IP/port.  We never send auth packets for LAN addresses.
++	if (Sys_IsLANAddress(clientAddr)) {
++		Com_DPrintf("playerDBResponse packet received for a LAN address, ignoring\n");
++		return;
++	}
++
++	arg3 = Cmd_Argv(3);
++	if (!Q_stricmp(arg3, "denied")) {
++		denied = qtrue;
++	}
++	else if (!Q_stricmp(arg3, "allowed")) {
++		denied = qfalse;
++	}
++	else {
++		Com_DPrintf("Invalid third argument in playerDBResponse packet: %s\n", arg3);
++		return;
++	}
++
++	if (challenge & 0x80000000) { // High bit set.  This is a regular periodic auth (not getchallenge).
++		// Find the connected player that has this challenge and IP address.
++		for (i = 0, cl = svs.clients; i < sv_maxclients->integer; i++, cl++) {
++			if (cl->state >= CS_CONNECTED && ((challenge ^ cl->challenge) & 0x7fffffff) == 0 &&
++					NET_CompareBaseAdr(clientAddr, cl->netchan.remoteAddress)) {
++				if (!denied) {
++					// This player is allowed to play, so we don't need any further action.
++					return;
++				}
++				Com_DPrintf("Dropping player %s (address %s) at request of the banserver\n",
++						cl->name, NET_AdrToString(cl->netchan.remoteAddress));
++				if (sv_permaBanBypass->string[0] &&
++						!strcmp(Info_ValueForKey(cl->userinfo, "permabanbypass"),
++							sv_permaBanBypass->string)) {
++					Com_DPrintf("Ban avoided by having correct permabanbypass\n");
++				}
++				else {
++					SV_DropClient(cl, "denied access");
++					// A brand new challenge will be issued when the client tries to reconnect.
++					// The auth server will be contacted all over again.
++				}
++				return;
++			}
++		}
++		Com_DPrintf("SVC_AuthorizePlayer: player to periodic auth not connected (addr %s)\n",
++				NET_AdrToString(clientAddr));
++		return;
++	}
++
++	// Otherwise this is a getchallenge auth (high bit not set on challenge).
++	for (i = 0; i < MAX_CHALLENGES; i++) {
++		// Checking the connected state of the challenge is actually a bit superfluous because
++		// the chances of another challenge matching in address and challenge number is quite
++		// slim.  I'm still adding the connected check for clarity.
++		if (((challenge ^ svs.challenges[i].challenge) & 0x7fffffff) == 0 && (!svs.challenges[i].connected) &&
++				NET_CompareBaseAdr(clientAddr, svs.challenges[i].adr)) {
++			break;
++		}
++	}
++	if (i == MAX_CHALLENGES) {
++		Com_DPrintf("SVC_AuthorizePlayer: challenge not found\n");
++		return;
++	}
++	if (denied) {
++		Com_DPrintf("Marking challenge for client address %s as banned\n",
++				NET_AdrToString(svs.challenges[i].adr));
++		// There is a quirk (or "feature") in SV_DirectConnect().  When this banned player
++		// connects via SV_DirectConnect() and their challenge is marked as permabanned,
++		// they will be dropped, but their challenge.connected will never be
++		// reset to false; it will remain as true.  Therefore, when the player
++		// tries to reconnect from scratch (via getchallenge packet), they
++		// will pick up a brand new challenge, which will cause a packet to
++		// be sent to the playerdb auth server all over again.  This is good
++		// because changes to who's banned on the auth server will be picked
++		// up very quickly.  However this is also bad because more packets will
++		// be sent to the auth server.
++		svs.challenges[i].permabanned = qtrue;
++	}
++	// Let the client connect even if they are banned.  We do this for two reasons.
++	// First, we want their userinfo string for the sake of sending it to the playerdb
++	// so that we can track offenders better.  Second, we need a way of letting
++	// innocent players affected by someone else's ban into the server, and the only way
++	// this is possible is by means of the userinfo string, which first appears in
++	// SV_DirectConnect().  We use "permabanbypass" in the userinfo for this.
++	svs.challenges[i].pingTime = svs.time;
++	Com_DPrintf("Sending challengeResponse to %s from SVC_AuthorizePlayer\n",
++			NET_AdrToString(svs.challenges[i].adr));
++	NET_OutOfBandPrint(NS_SERVER, svs.challenges[i].adr, "challengeResponse %i", svs.challenges[i].challenge);
++}
++
++/*
+ =================
+ SV_ConnectionlessPacket
+ 
+@@ -550,6 +720,8 @@
+ 	////////////////////////////////////////////////
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
++	} else if (!Q_stricmp(c, "playerDBResponse")) {
++		SVC_AuthorizePlayer( from );
+ 	} else if (!Q_stricmp(c, "disconnect")) {
+ 		// if a client starts up a local server, we may see some spurious
+ 		// server disconnect messages when their new server sees our final
+@@ -727,7 +899,6 @@
+ 	}
+ }
+ 
+-
+ /*
+ ==================
+ SV_CheckPaused
+@@ -889,6 +1060,46 @@
+ 
+ 	// send a heartbeat to the master if needed
+ 	SV_MasterHeartbeat();
++
++	if (sv_playerDBPassword->modified) {
++		Com_DPrintf("Detected playerdb server password change\n");
++		Q_strncpyz(svs.playerDatabasePassword, sv_playerDBPassword->string, sizeof(svs.playerDatabasePassword));
++		Cvar_Set(sv_playerDBPassword->name, "");
++		sv_playerDBPassword->modified = qfalse;
++	}
++
++	// These are very inexpensive operations; they don't impact CPU usage even if
++	// the playerdb system is turned off.
++	static int authFrameCount = 0;
++	static int authClientInx = 0;
++	client_t *cl;
++	authFrameCount++;
++	if (authFrameCount == 80) { // 4 seconds during normal gameplay (20 frames per sec)
++		authFrameCount = 0;
++		if (authClientInx >= sv_maxclients->integer) {
++			authClientInx = 0;
++		}
++		cl = &svs.clients[authClientInx];
++		if (cl->state >= CS_CONNECTED && // IPv6 not supported at this point.
++				(cl->netchan.remoteAddress.type == NA_IP /* || cl->netchan.remoteAddress.type == NA_IP6 */) &&
++				sv_playerDBBanIDs->string[0]) {
++			SV_ResolvePlayerDB();
++			if (svs.playerDatabaseAddress.type != NA_BAD && !Sys_IsLANAddress(cl->netchan.remoteAddress)) {
++				Com_DPrintf("Sending authorizePlayer packet to playerdb for client address %i.%i.%i.%i\n",
++						cl->netchan.remoteAddress.ip[0], cl->netchan.remoteAddress.ip[1],
++						cl->netchan.remoteAddress.ip[2], cl->netchan.remoteAddress.ip[3]);
++				NET_OutOfBandPrint(NS_SERVER,
++					svs.playerDatabaseAddress,
++					"playerDBRequest\n%s\nauthorizePlayer:%08x\n%s\n%i.%i.%i.%i\n",
++					svs.playerDatabasePassword,
++					0x80000000 | (cl->challenge),
++					sv_playerDBBanIDs->string,
++					cl->netchan.remoteAddress.ip[0], cl->netchan.remoteAddress.ip[1],
++					cl->netchan.remoteAddress.ip[2], cl->netchan.remoteAddress.ip[3]);
++			}
++		}
++		authClientInx++;
++	}
+ }
+ 
+ //============================================================================
+Index: code/qcommon/net_chan.c
+===================================================================
+--- code/qcommon/net_chan.c	(revision 531)
++++ code/qcommon/net_chan.c	(working copy)
+@@ -787,6 +787,64 @@
+ //////////////////////////////
+ // marker for NET_IsIP() begin
+ //////////////////////////////
++
++/*
++====================
++NET_IsIP
++
++Determines whether a string is a valid IPv4 address.  Unfortunately this function
++does not currently handle IPv6 addresses.  This function is strict to the extreme
++degree; octets must be in base 10 and non-zero octets may not have leading 0's.
++
++Use this function to check that it's a raw IP address before passing it to
++NET_StringToAdr to ensure that no DNS lookups will take place.  This is a very
++efficient operation and will take very few CPU cycles.
++
++TODO: Add support for IPv6 addresses.
++Question: what if you pass an IPv6 address to DNS resolution configured only for IPv4, or
++vice versa?  Will it try to contact the DNS server?
++====================
++*/
++qboolean NET_IsIP( const char *s ) {
++	int		i;
++	int		length = -1;
++	int		octetInx = 3;
++	int		digitCount = 0;
++	int		sum = 0;
++	char		character = '\0';
++	qboolean	lastZero = qfalse;
++	int		powBase10[] = { 1, 10, 100 };
++
++	while (qtrue) {
++		if (length == 15) { return qfalse; }
++		if (s[++length] == '\0') { break; }
++	}
++
++	for (i = length; i >= 0;) {
++		if (--i < 0 || (character = s[i]) == '.') {
++			if (sum == 0) {
++				if (digitCount != 1) { return qfalse; }
++			}
++			else { // sum is not zero
++				if (lastZero) { return qfalse; }
++				if (sum > 0x000000ff) { return qfalse; }
++			}
++			octetInx--;
++			if (i >= 0 && octetInx < 0) { return qfalse; }
++			digitCount = 0;
++			sum = 0;
++		}
++		else if ('0' <= character && character <= '9') {
++			if (digitCount == 3) { return qfalse; }
++			if ('0' == character) { lastZero = qtrue; }
++			else { lastZero = qfalse; }
++			sum += (powBase10[digitCount++] * (character - '0'));
++		}
++		else { return qfalse; }
++	}
++	if (octetInx >= 0) { return qfalse; }
++	return qtrue;
++}
+ ////////////////////////////
+ // marker for NET_IsIP() end
+ ////////////////////////////
+Index: code/qcommon/qcommon.h
+===================================================================
+--- code/qcommon/qcommon.h	(revision 531)
++++ code/qcommon/qcommon.h	(working copy)
+@@ -166,6 +166,7 @@
+ qboolean	NET_IsLocalAddress (netadr_t adr);
+ const char	*NET_AdrToString (netadr_t a);
+ qboolean	NET_StringToAdr ( const char *s, netadr_t *a);
++qboolean	NET_IsIP ( const char *s);
+ qboolean	NET_GetLoopPacket (netsrc_t sock, netadr_t *net_from, msg_t *net_message);
+ void		NET_Sleep(int msec);
+ 

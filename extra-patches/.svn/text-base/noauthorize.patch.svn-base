@@ -1,0 +1,30 @@
+Index: code/server/sv_ccmds.c
+===================================================================
+--- code/server/sv_ccmds.c	(revision 498)
++++ code/server/sv_ccmds.c	(working copy)
+@@ -780,8 +780,10 @@
+ 
+ 	Cmd_AddCommand ("heartbeat", SV_Heartbeat_f);
+ 	Cmd_AddCommand ("kick", SV_Kick_f);
++	/*
+ 	Cmd_AddCommand ("banUser", SV_Ban_f);
+ 	Cmd_AddCommand ("banClient", SV_BanNum_f);
++	*/
+ 	Cmd_AddCommand ("clientkick", SV_KickNum_f);
+ 	Cmd_AddCommand ("status", SV_Status_f);
+ 	Cmd_AddCommand ("serverinfo", SV_Serverinfo_f);
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 498)
++++ code/server/sv_main.c	(working copy)
+@@ -543,8 +543,10 @@
+ 		SV_GetChallenge( from );
+ 	} else if (!Q_stricmp(c, "connect")) {
+ 		SV_DirectConnect( from );
++	/*
+ 	} else if (!Q_stricmp(c, "ipAuthorize")) {
+ 		SV_AuthorizeIpPacket( from );
++	*/
+ 	} else if (!Q_stricmp(c, "rcon")) {
+ 		SVC_RemoteCommand( from, msg );
+ 	////////////////////////////////////////////////

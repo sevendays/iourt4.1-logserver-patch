@@ -1,0 +1,58 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 489)
++++ code/server/sv_client.c	(working copy)
+@@ -283,6 +283,13 @@
+ 				Com_DPrintf ("Client %i rejected on a too high ping\n", i);
+ 				return;
+ 			}
++
++			// I guess we're not checking for the qport 1337 hack on LAN clients.
++			if (sv_block1337->integer > 0 && qport == 1337) {
++				NET_OutOfBandPrint(NS_SERVER, from, "print\nThis server is not for wussies.\n");
++				Com_DPrintf("1337 qport, rejected connect from %s\n", NET_AdrToString(from));
++				return;
++			}
+ 		}
+ 	}
+ 
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 489)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_block1337;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 489)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_block1337 = Cvar_Get ("sv_block1337", "0", CVAR_ARCHIVE );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 489)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,9 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_block1337;			// whether to block clients with qport 1337,
++					// default 0 don't block
++
+ /*
+ =============================================================================
+ 

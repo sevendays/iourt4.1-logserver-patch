@@ -1,0 +1,481 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 541)
++++ code/server/sv_client.c	(working copy)
+@@ -159,6 +159,67 @@
+ 
+ /*
+ ==================
++SV_ResolveIP2Loc
++
++sv_ip2locHost->string is not touched by this function.  svs.ip2locAddress.type
++will be set to NA_BAD when resolution fails or when sv_ip2locHost is empty.
++==================
++*/
++void SV_ResolveIP2Loc( void ) {
++	int	res;
++
++	if (sv_ip2locHost->modified) { // This will be true when server starts up even if sv_playerDBHost is empty.
++		sv_ip2locHost->modified = qfalse;
++		if (sv_ip2locHost->string[0]) {
++			Com_Printf("Resolving ip2loc server address %s\n", sv_ip2locHost->string);
++			res = NET_StringToAdr(sv_ip2locHost->string, &svs.ip2locAddress);
++			if (!res) {
++				// svs.ip2locAddress.type will be set to NA_BAD by NET_StringToAdr().
++				Com_Printf("Couldn't resolve ip2loc server address: %s\n", sv_ip2locHost->string);
++				return;
++			}
++			if (res == 2) {
++				// Set the default port since it was not specified.
++				svs.ip2locAddress.port = BigShort(10020);
++			}
++			Com_Printf("%s (ip2loc server) resolved to %s\n", sv_ip2locHost->string,
++					NET_AdrToString(svs.ip2locAddress));
++		}
++		else {
++			svs.ip2locAddress.type = NA_BAD;
++		}
++	}
++}
++
++/*
++==================
++SV_SendIP2LocPacketConditionally
++
++Will only send a packet to the ip2loc service if sv_ip2locEnable is nonzero positive and
++if svs.ip2locAddress.type is not NA_BAD after a resolution attempt.  If sv_ip2locPassword
++is empty a packet will still be sent.  A packet will not be sent if this is a LAN address.
++==================
++*/
++void SV_SendIP2LocPacketConditionally( client_t *cl ) {
++	netadr_t	adr;
++
++	if (sv_ip2locEnable->integer > 0) {
++		SV_ResolveIP2Loc();
++		adr = cl->netchan.remoteAddress;
++		if (svs.ip2locAddress.type != NA_BAD && !Sys_IsLANAddress(adr)) {
++			int ip2locChallengeBits = ((rand() << 16) ^ rand()) ^ svs.time;
++			Q_snprintf(cl->ip2locChallengeStr, sizeof(cl->ip2locChallengeStr), "%08x", ip2locChallengeBits);
++			Com_DPrintf("Sending ip2loc packet for address %i.%i.%i.%i\n",
++				adr.ip[0], adr.ip[1], adr.ip[2], adr.ip[3]);
++			NET_OutOfBandPrint(NS_SERVER, svs.ip2locAddress, "ip2locRequest\n%s\ngetLocationForIP:%08x\n%i.%i.%i.%i\n",
++					sv_ip2locPassword->string, ip2locChallengeBits,
++					adr.ip[0], adr.ip[1], adr.ip[2], adr.ip[3]);
++		}
++	}
++}
++
++/*
++==================
+ SV_DirectConnect
+ 
+ A "connect" OOB command has been received
+@@ -215,6 +276,25 @@
+ 			break;
+ 		}
+ 	}
++
++	// We have not gotten a location for this player yet; don't let them override their location even temporarily.
++	// We could check the value of sv_ip2locEnable before doing this, but it's safer to disallow presence of the
++	// location cvar if ip2loc is disabled.
++	int oldInfoLen = strlen(userinfo);
++	int newInfoLen;
++	while (qtrue) {
++		// It's possible for the location key to be present in a userinfo more than once.
++		// Therefore, we remove all instances of it.  Note that all of these computations on the
++		// userinfo (such as strlen()) really start to add up.  A bombardment of connect packets
++		// might really tax the CPU and might cause huge server hitches.
++		Info_RemoveKey(userinfo, "location");
++		newInfoLen = strlen(userinfo);
++		if (oldInfoLen == newInfoLen) { // userinfo wasn't modified.
++			break;
++		}
++		Com_DPrintf("Removed location key from userinfo, connect from %s\n", NET_AdrToString(from));
++		oldInfoLen = newInfoLen;
++	}
+ 	
+ 	//////////////////////////////////////////////////////////////
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+@@ -416,6 +496,8 @@
+ 	// gamestate message was not just sent, forcing a retransmit
+ 	newcl->gamestateMessageNum = -1;
+ 
++	SV_SendIP2LocPacketConditionally(newcl);
++
+ 	// if this was the first client on the server, or the last client
+ 	// the server can hold, send a heartbeat to the master.
+ 	count = 0;
+@@ -1161,6 +1243,21 @@
+ 	int		i;
+ 	int	len;
+ 
++	if (!cl->location[0]) { // Remove the location cvar if present.
++		int oldInfoLen = strlen(cl->userinfo);
++		int newInfoLen;
++		while (qtrue) {
++			// It's possible for the location key to be present in a userinfo more than once.
++			Info_RemoveKey(cl->userinfo, "location");
++			newInfoLen = strlen(cl->userinfo);
++			if (oldInfoLen == newInfoLen) { // userinfo wasn't modified.
++				break;
++			}
++			Com_DPrintf("Removed location key from userinfo for player #%i\n", cl - svs.clients);
++			oldInfoLen = newInfoLen;
++		}
++	}
++
+ 	//////////////////////////////////////////////////////////////
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+@@ -1230,6 +1327,20 @@
+ 	}
+ 	Info_SetValueForKey( cl->userinfo, "ip", ip );
+ 
++	// Don't allow the client to override their own location cvar.
++	if (cl->location[0]) {
++		val = Info_ValueForKey(cl->userinfo, "location");
++		if (val[0])
++			len = strlen(cl->location) - strlen(val) + strlen(cl->userinfo);
++		else
++			len = strlen(cl->location) + 2 + 8 + strlen(cl->userinfo);
++		if (len >= MAX_INFO_STRING) {
++			SV_DropClient(cl, "userinfo string length exceeded");
++			return;
++		}
++		Info_SetValueForKey(cl->userinfo, "location", cl->location);
++	}
++
+ 	////////////////////////////////////////////////
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 541)
++++ code/server/server.h	(working copy)
+@@ -118,6 +118,8 @@
+ 	struct netchan_buffer_s *next;
+ } netchan_buffer_t;
+ 
++#define	MAX_LOCATION_STRING	96
++
+ typedef struct client_s {
+ 	clientState_t	state;
+ 	char			userinfo[MAX_INFO_STRING];		// name, etc
+@@ -176,6 +178,9 @@
+ 
+ 	int				oldServerTime;
+ 	qboolean			csUpdated[MAX_CONFIGSTRINGS+1];	
++
++	char				location[MAX_LOCATION_STRING];
++	char				ip2locChallengeStr[9];	// 8 character hexadecimal string
+ } client_t;
+ 
+ //=============================================================================
+@@ -219,6 +224,8 @@
+ 
+ 	netadr_t	authorizeAddress;			// for rcon return messages
+ 
++	netadr_t	ip2locAddress;				// holds resolution of sv_ip2locHost
++
+ 	////////////////////////////////////////////////
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
+@@ -261,6 +268,10 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_ip2locEnable;
++extern	cvar_t	*sv_ip2locHost;
++extern	cvar_t	*sv_ip2locPassword;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 541)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,10 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_ip2locEnable = Cvar_Get ("sv_ip2locEnable", "0", CVAR_ARCHIVE );
++	sv_ip2locHost = Cvar_Get ("sv_ip2locHost", "", CVAR_ARCHIVE );
++	sv_ip2locPassword = Cvar_Get ("sv_ip2locPassword", "", CVAR_TEMP );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_bot.c
+===================================================================
+--- code/server/sv_bot.c	(revision 541)
++++ code/server/sv_bot.c	(working copy)
+@@ -59,6 +59,10 @@
+ 		return -1;
+ 	}
+ 
++	// It's safest to null out the entire client_t structure, even though our immediate purpose
++	// is only to make sure that cl->location is empty.
++	Com_Memset(cl, 0, sizeof(client_t));
++
+ 	cl->gentity = SV_GentityNum( i );
+ 	cl->gentity->s.number = i;
+ 	cl->state = CS_ACTIVE;
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 541)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,10 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_ip2locEnable;		// whether to enable messages showing where players connect from, default 0, disable
++cvar_t	*sv_ip2locHost;			// host and port of the ip2loc service, e.g. "localhost:10020"
++cvar_t	*sv_ip2locPassword;		// password for the ip2loc service
++
+ /*
+ =============================================================================
+ 
+@@ -509,6 +513,150 @@
+ }
+ 
+ /*
++===============
++SVC_HandleIP2Loc
++
++Deal with packets from the ip2loc lookup service.  Packets should be of the form:
++\xFF\xFF\xFF\xFFip2locResponse "getLocationForIP" "<IP address>" "<country code>" "<country>" "<region>" "<city>" "<latitude>" "<longitude>"
++===============
++*/
++void SVC_HandleIP2Loc( netadr_t from ) {
++	netadr_t	clientadr;
++	int		i;
++	client_t	*cl;
++	qboolean	countryNeedsRegion = qfalse;
++	qboolean	citySpecified = qfalse;
++	qboolean	regionSpecified = qfalse;
++	qboolean	countrySpecified = qfalse;
++
++	if (!(sv_ip2locHost->string[0] && sv_ip2locEnable->integer > 0)) {
++		Com_DPrintf("ip2locResponse packet received from %s unexpectedly\n",
++			NET_AdrToString(from));
++		return;
++	}
++	// NET_CompareAdr() will compare the .type of the address, which will be NA_BAD for svs.ip2locAddress if resolution failed.
++	if (!NET_CompareAdr(from, svs.ip2locAddress)) {
++		Com_DPrintf("ip2locResponse packet received from invalid ip2loc server: %s\n",
++			NET_AdrToString(from));
++		return;
++	}
++	const char *command = "getLocationForIP:xxxxxxxx";
++	if (strlen(command) != strlen(Cmd_Argv(1)) ||
++			Q_strncmp(command, Cmd_Argv(1), 17)) { // Check up to and including the ':'.
++		Com_DPrintf("We only understand \"%s\" on ip2locResponse packets\n", command);
++		return;
++	}
++	Com_DPrintf("Received ip2locResponse packet for client address %s\n", Cmd_Argv(2));
++	// Make sure this is an IP address (so that DNS lookups won't happen below).
++	if (!NET_IsIP(Cmd_Argv(2))) { // Unfortunately does not currently handle IPv6.
++		Com_DPrintf("Invalid IP address in ip2locResponse packet: %s\n", Cmd_Argv(2));
++		return;
++	}
++	if (!NET_StringToAdr(Cmd_Argv(2), &clientadr)) { // Should never ever happen.
++		Com_DPrintf("Invalid IP address in ip2locResponse packet: %s\n", Cmd_Argv(2));
++		return;
++	}
++
++	// We won't check that the address is a non-LAN address.  That's going too far in error checking.
++
++	for (i = 0, cl = svs.clients; i < sv_maxclients->integer; i++, cl++) {
++		if (cl->state < CS_CONNECTED || cl->netchan.remoteAddress.type == NA_BOT || cl->location[0] ||
++				// IMPORTANT!  Make sure we check length of Cmd_Argv(1) above!!!
++				// Use strncmp instead of strcmp in case cl->ip2locChallengeStr didn't
++				// get initialized to zeroes when the client was created (programming error).
++				Q_strncmp(cl->ip2locChallengeStr, Cmd_Argv(1) + 17, sizeof(cl->ip2locChallengeStr) - 1)) {
++			continue;
++		}
++		if (NET_CompareBaseAdr(clientadr, cl->netchan.remoteAddress)) {
++			if (Cmd_Argv(6)[0]) {
++				Q_strcat(cl->location, sizeof(cl->location), Cmd_Argv(6));
++				citySpecified = qtrue;
++			}
++			if ((!Q_stricmp(Cmd_Argv(3), "US")) || (!Q_stricmp(Cmd_Argv(3), "CA"))) {
++				countryNeedsRegion = qtrue;
++			}
++			if (countryNeedsRegion && Cmd_Argv(5)[0]) {
++				if (citySpecified) {
++					Q_strcat(cl->location, sizeof(cl->location), ", ");
++				}
++				Q_strcat(cl->location, sizeof(cl->location), Cmd_Argv(5));
++				regionSpecified = qtrue;
++			}
++			if (Cmd_Argv(4)[0]) {
++				if (regionSpecified && citySpecified) {
++					Q_strcat(cl->location, sizeof(cl->location), " (");
++				}
++				else if (regionSpecified || citySpecified) {
++					Q_strcat(cl->location, sizeof(cl->location), ", ");
++				}
++				Q_strcat(cl->location, sizeof(cl->location), Cmd_Argv(4));
++				if (regionSpecified && citySpecified) {
++					Q_strcat(cl->location, sizeof(cl->location), ")");
++				}
++				countrySpecified = qtrue;
++			}
++
++			if (citySpecified || regionSpecified || countrySpecified) {
++				SV_SendServerCommand(NULL, "print \"    from %s\n\"", cl->location);
++			}
++			else {
++				Q_strcat(cl->location, sizeof(cl->location), "UNKNOWN LOCATION");
++			}
++			SV_UserinfoChanged(cl);
++			VM_Call( gvm, GAME_CLIENT_USERINFO_CHANGED, cl - svs.clients );
++			break;
++		}
++	}
++}
++
++/*
++================
++SVC_Locations
++
++Same as SVC_Status() but with locations but without server cvars.
++================
++*/
++void SVC_Locations(netadr_t from) {
++	char		player[1024];
++	char		status[MAX_MSGLEN];
++	int		i;
++	client_t	*cl;
++	playerState_t	*ps;
++	int		statusLength;
++	int		playerLength;
++
++	// Ignore if we are in single player.
++	if (Cvar_VariableValue("g_gametype") == GT_SINGLE_PLAYER) {
++		return;
++	}
++
++	if (!(sv_ip2locEnable->integer > 0)) {
++		Com_DPrintf("bad connectionless packet (ip2loc turned off) from %s:\n%s\n", NET_AdrToString(from), "getlocations");
++		return;
++	}
++
++	status[0] = '\0';
++	statusLength = 0;
++
++	for (i = 0; i < sv_maxclients->integer; i++) {
++		cl = &svs.clients[i];
++		if (cl->state >= CS_CONNECTED) {
++			ps = SV_GameClientNum(i);
++			Com_sprintf(player, sizeof(player), "%i %i \"%s\" \"%s\"\n",
++				ps->persistant[PERS_SCORE], cl->ping, cl->name, cl->location);
++			playerLength = strlen(player);
++			if (statusLength + playerLength >= sizeof(status)) {
++				break; // Can't hold any more.
++			}
++			strcpy(status + statusLength, player);
++			statusLength += playerLength;
++		}
++	}
++
++	NET_OutOfBandPrint(NS_SERVER, from, "locationResponse\n%s", status);
++}
++
++/*
+ =================
+ SV_ConnectionlessPacket
+ 
+@@ -547,6 +695,10 @@
+ 		SV_AuthorizeIpPacket( from );
+ 	} else if (!Q_stricmp(c, "rcon")) {
+ 		SVC_RemoteCommand( from, msg );
++	} else if (!Q_stricmp(c, "ip2locResponse")) {
++		SVC_HandleIP2Loc( from );
++	} else if (!Q_stricmp(c, "getlocations")) {
++		SVC_Locations( from );
+ 	////////////////////////////////////////////////
+ 	// separator for ip2loc.patch and playerdb.patch
+ 	////////////////////////////////////////////////
+Index: code/qcommon/net_chan.c
+===================================================================
+--- code/qcommon/net_chan.c	(revision 541)
++++ code/qcommon/net_chan.c	(working copy)
+@@ -787,6 +787,64 @@
+ //////////////////////////////
+ // marker for NET_IsIP() begin
+ //////////////////////////////
++
++/*
++====================
++NET_IsIP
++
++Determines whether a string is a valid IPv4 address.  Unfortunately this function
++does not currently handle IPv6 addresses.  This function is strict to the extreme
++degree; octets must be in base 10 and non-zero octets may not have leading 0's.
++
++Use this function to check that it's a raw IP address before passing it to
++NET_StringToAdr to ensure that no DNS lookups will take place.  This is a very
++efficient operation and will take very few CPU cycles.
++
++TODO: Add support for IPv6 addresses.
++Question: what if you pass an IPv6 address to DNS resolution configured only for IPv4, or
++vice versa?  Will it try to contact the DNS server?
++====================
++*/
++qboolean NET_IsIP( const char *s ) {
++	int		i;
++	int		length = -1;
++	int		octetInx = 3;
++	int		digitCount = 0;
++	int		sum = 0;
++	char		character = '\0';
++	qboolean	lastZero = qfalse;
++	int		powBase10[] = { 1, 10, 100 };
++
++	while (qtrue) {
++		if (length == 15) { return qfalse; }
++		if (s[++length] == '\0') { break; }
++	}
++
++	for (i = length; i >= 0;) {
++		if (--i < 0 || (character = s[i]) == '.') {
++			if (sum == 0) {
++				if (digitCount != 1) { return qfalse; }
++			}
++			else { // sum is not zero
++				if (lastZero) { return qfalse; }
++				if (sum > 0x000000ff) { return qfalse; }
++			}
++			octetInx--;
++			if (i >= 0 && octetInx < 0) { return qfalse; }
++			digitCount = 0;
++			sum = 0;
++		}
++		else if ('0' <= character && character <= '9') {
++			if (digitCount == 3) { return qfalse; }
++			if ('0' == character) { lastZero = qtrue; }
++			else { lastZero = qfalse; }
++			sum += (powBase10[digitCount++] * (character - '0'));
++		}
++		else { return qfalse; }
++	}
++	if (octetInx >= 0) { return qfalse; }
++	return qtrue;
++}
+ ////////////////////////////
+ // marker for NET_IsIP() end
+ ////////////////////////////
+Index: code/qcommon/qcommon.h
+===================================================================
+--- code/qcommon/qcommon.h	(revision 541)
++++ code/qcommon/qcommon.h	(working copy)
+@@ -166,6 +166,7 @@
+ qboolean	NET_IsLocalAddress (netadr_t adr);
+ const char	*NET_AdrToString (netadr_t a);
+ qboolean	NET_StringToAdr ( const char *s, netadr_t *a);
++qboolean	NET_IsIP ( const char *s);
+ qboolean	NET_GetLoopPacket (netsrc_t sock, netadr_t *net_from, msg_t *net_message);
+ void		NET_Sleep(int msec);
+ 

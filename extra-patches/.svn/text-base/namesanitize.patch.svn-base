@@ -1,0 +1,223 @@
+Index: code/server/sv_client.c
+===================================================================
+--- code/server/sv_client.c	(revision 497)
++++ code/server/sv_client.c	(working copy)
+@@ -158,6 +158,138 @@
+ }
+ 
+ /*
++=================
++SV_SanitizeNameConditionally
++
++Return codes:
++ 0 = success
++ 1 = userinfo overflow
++-1 = illegal characters
++
++This function only acts if sv_sanitizeNames is set to a nonzero positive value.  If that
++is not the case, this function returns 0 immediately.
++
++Converts a raw userinfo name into the "UrT server QVM name", which is a sanitized version of
++the name.  The UrT server QVM name has spaces and colors stripped.
++In case the raw name is missing or has zero length after sanitation, it becomes "UnnamedPlayer".
++The sanitized name can be at most 20 characters long.  The logic here tries to accurately
++mimic the logic in the UrT server QVM game engine.
++
++Spaces are deleted before color stripping takes place; a space is not "gobbled up" by a
++preceding carat ('^').  For example, the name "^ 7W" sanitizes to "W", not "7W", because
++the '7' is gobbled up by the carat after the space is stripped.
++The complete list of characters that are "pre-stripped" (like space) are
++\0001 through \0011, \0013 and \0014, \0016 through \0032, \0034 through \0040, and \0177.
++Some characters should never appear in the userinfo name value for various reasons (for
++example a certain character may never be transmitted by the client).  These characters are
++\0012 (new line), \0015 (carriage return), \0033 (escape), \0042 (double quote),
++\0073 (semicolon), \0134 (backslash), and all characters with the high bit set
++(\0200 through \0377).  Even though these characters may in fact never be
++encountered, if we do see them in the name, we don't sanitize the name and return -1.
++=================
++*/
++int SV_SanitizeNameConditionally(char *userinfo) {
++	static	char		charTypeMap[0400];
++	static	qboolean	charMapInitialized = qfalse;
++	char			*origRawName;
++	char			*rawName;
++	char			sanitizedName[20 + 1];
++	int			sanitizedInx;
++	int			i;
++	char			code;
++	qboolean		gobble;
++	int			len;
++
++	if (!(sv_sanitizeNames->integer > 0)) {
++		return 0;
++	}
++
++	if (!charMapInitialized) {
++
++		// Codes:
++		// a - the null character
++		// b - carat
++		// c - space and other characters that are pre-stripped
++		// d - normal characters that appear in name
++		// e - disallowed characters
++
++		charTypeMap[0000] = 'a';
++		for (i = 0001; i <= 0011; i++) { charTypeMap[i] = 'c'; }
++		charTypeMap[0012] = 'e'; // new line
++		charTypeMap[0013] = 'c';
++		charTypeMap[0014] = 'c';
++		charTypeMap[0015] = 'e'; // carriage return
++		for (i = 0016; i <= 0032; i++) { charTypeMap[i] = 'c'; }
++		charTypeMap[0033] = 'e'; // escape
++		for (i = 0034; i <= 0040; i++) { charTypeMap[i] = 'c'; }
++		charTypeMap[0041] = 'd';
++		charTypeMap[0042] = 'e'; // double quote
++		for (i = 0043; i <= 0072; i++) { charTypeMap[i] = 'd'; }
++		charTypeMap[0073] = 'e'; // semicolon
++		for (i = 0074; i <= 0133; i++) { charTypeMap[i] = 'd'; }
++		charTypeMap[0134] = 'e'; // backslash
++		charTypeMap[0135] = 'd';
++		charTypeMap[0136] = 'b';
++		for (i = 0137; i <= 0176; i++) { charTypeMap[i] = 'd'; }
++		charTypeMap[0177] = 'c';
++		for (i = 0200; i <= 0377; i++) { charTypeMap[i] = 'e'; } // high bit set
++
++		charMapInitialized = qtrue;
++
++	}
++
++	origRawName = Info_ValueForKey(userinfo, "name");
++	rawName = origRawName;
++	sanitizedInx = 0;
++	gobble = qfalse;
++
++	while (qtrue) {
++		if (sanitizedInx + 1 == sizeof(sanitizedName)) { break; }
++		code = charTypeMap[rawName[0] & 0xff];
++		switch (code) {
++			case 'a': // end of string
++				break;
++			case 'b': // carat
++				gobble = !gobble;
++				rawName++;
++				break;
++			case 'c': // character to pre-strip
++				rawName++;
++				break;
++			case 'd': // regular char in sanitized name
++				if (gobble) { gobble = qfalse; }
++				else { sanitizedName[sanitizedInx++] = rawName[0]; }
++				rawName++;
++				break;
++			default: // 'e', disallowed character
++				return -1;
++		}
++		if (code == 'a') break;
++	}
++
++	// Check rest of raw name for illegal chars.
++	while (rawName[0]) {
++		if (charTypeMap[rawName[0] & 0xff] == 'e') { return -1; }
++		rawName++;
++	}
++
++	sanitizedName[sanitizedInx] = '\0';
++	if (!sanitizedName[0]) {
++		if (origRawName[0])
++			len = 13 - strlen(origRawName) + strlen(userinfo);
++		else
++			len = 13 + 2 + 4 + strlen(userinfo);
++		if (len >= MAX_INFO_STRING) {
++			return 1;
++		}
++		Q_strncpyz(sanitizedName, "UnnamedPlayer", sizeof(sanitizedName));
++	}
++
++	Info_SetValueForKey(userinfo, "name", sanitizedName);
++	return 0;
++}
++
++/*
+ ==================
+ SV_DirectConnect
+ 
+@@ -220,6 +352,21 @@
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+ 
++	int rtn = SV_SanitizeNameConditionally(userinfo);
++	if (rtn > 0) {
++		NET_OutOfBandPrint(NS_SERVER, from,
++			"print\nUserinfo string length exceeded.  "
++			"Try removing setu cvars from your config.\n");
++		return;
++	}
++	else if (rtn < 0) {
++		NET_OutOfBandPrint(NS_SERVER, from, "print\nIllegal characters in player name.\n");
++		Com_DPrintf("Illegal chars in player name \"%s\" from %s\n",
++				Info_ValueForKey(userinfo, "name"),
++				NET_AdrToString(from));
++		return;
++	}
++
+ 	// don't let "ip" overflow userinfo string
+ 	if ( NET_IsLocalAddress (from) )
+ 		ip = "localhost";
+@@ -1165,6 +1312,18 @@
+ 	// separator for userinfooverflow.patch and namesanitize.patch
+ 	//////////////////////////////////////////////////////////////
+ 
++	int rtn = SV_SanitizeNameConditionally(cl->userinfo);
++	if (rtn > 0) {
++		SV_DropClient(cl, "userinfo string length exceeded");
++		return;
++	}
++	else if (rtn < 0) {
++		SV_DropClient(cl, "illegal characters in player name");
++		Com_DPrintf("Illegal chars in player name \"%s\" from %s\n",
++				Info_ValueForKey(cl->userinfo, "name"),
++				NET_AdrToString(cl->netchan.remoteAddress));
++		return;
++	}
+ 	// name for C code
+ 	Q_strncpyz( cl->name, Info_ValueForKey (cl->userinfo, "name"), sizeof(cl->name) );
+ 
+Index: code/server/server.h
+===================================================================
+--- code/server/server.h	(revision 497)
++++ code/server/server.h	(working copy)
+@@ -261,6 +261,8 @@
+ extern	cvar_t	*sv_lanForceRate;
+ extern	cvar_t	*sv_strictAuth;
+ 
++extern	cvar_t	*sv_sanitizeNames;
++
+ //===========================================================
+ 
+ //
+Index: code/server/sv_init.c
+===================================================================
+--- code/server/sv_init.c	(revision 497)
++++ code/server/sv_init.c	(working copy)
+@@ -679,6 +679,8 @@
+ 	sv_lanForceRate = Cvar_Get ("sv_lanForceRate", "1", CVAR_ARCHIVE );
+ 	sv_strictAuth = Cvar_Get ("sv_strictAuth", "1", CVAR_ARCHIVE );
+ 
++	sv_sanitizeNames = Cvar_Get ("sv_sanitizeNames", "0", CVAR_INIT );
++
+ 	// initialize bot cvars so they are listed and can be set before loading the botlib
+ 	SV_BotInitCvars();
+ 
+Index: code/server/sv_main.c
+===================================================================
+--- code/server/sv_main.c	(revision 497)
++++ code/server/sv_main.c	(working copy)
+@@ -54,6 +54,8 @@
+ cvar_t	*sv_lanForceRate; // dedicated 1 (LAN) server forces local client rates to 99999 (bug #491)
+ cvar_t	*sv_strictAuth;
+ 
++cvar_t	*sv_sanitizeNames;		// whether to sanitize names in userinfos, making them just like in UrT
++
+ /*
+ =============================================================================
+ 
