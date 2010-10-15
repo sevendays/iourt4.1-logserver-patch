@@ -9,6 +9,29 @@ This enables gameserver farms to have a single separate server for logging and g
 
 Kudos to Rambetter who set up a svn repository having many useful patches. The original code of this project was taken from his svn repo. You can find it here: http://forums.urbanterror.info/topic/18495-svn-repository-for-iourbanterror-exploit-fixes/
 
+USAGE:
+1) download and build the code: the executable will be created inside the build/ folder.
+2) backup your ~/.q3a/q3ut4 folder.
+3) create default.cfg (touch ~/.q3a/q3ut4/default.cfg) otherwise the gameserver won't start.
+4) create autoexec.cfg and put in it:
+
+	seta logserver_enable "1"
+	seta logserver_address "localhost:27961"
+	seta logserver_user "yourname"
+	seta logserver_password "yourpass"
+
+5) use netcat to listen for incoming udp packets on the selected port (27961):
+
+	nc -ul 27961
+
+6) start the server. Yopu should receive in netcat the string
+
+	"\uyourname\pyourpass"
+
+   repeated 10 times.
+
+
+
 If you want some directions on how the ioquake3 server works, read this: http://nrfw.org/q3_coding_tips.html
 It explains briefly:
 -the big picture;
