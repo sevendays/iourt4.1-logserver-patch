@@ -1,0 +1,4 @@
+seta logserver_enable "1"
+seta logserver_address "localhost:27961"
+seta logserver_user "luca"
+seta logserver_password "rawr"
