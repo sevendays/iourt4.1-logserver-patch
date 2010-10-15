@@ -9,7 +9,7 @@ This repository contains the IoUrbanTerror gameserver code, the scope of the pro
 
 This enables gameserver farms to have a single separate server for logging and game stats, and gamebot developers to avoid opening and parsing logfiles or installing the gamebot on the same machine used by the gameserver.
 
-Kudos to Rambetter who set up a svn repository having many useful patches. The original code of this project was taken from his svn repo. You can find it [in the UrbanTerror forums](http://forums.urbanterror.info/topic/18495-svn-repository-for-iourbanterror-exploit-fixes/ "post by rambetter on urt forum")
+Kudos to Rambetter who set up a svn repository having many useful patches. The original code of this project was taken from his svn repo. You can find it [in the UrbanTerror forums](http://forums.urbanterror.info/topic/18495-svn-repository-for-iourbanterror-exploit-fixes/ "post by rambetter on urt forum").
 
 
 USAGE
@@ -20,19 +20,19 @@ USAGE
 * create default.cfg (touch ~/.q3a/q3ut4/default.cfg) otherwise the gameserver won't start.
 * create autoexec.cfg and put in it:
 <code>
-	seta logserver_enable "1"
-	seta logserver_address "localhost:27961"
-	seta logserver_user "yourname"
-	seta logserver_password "yourpass"
+    seta logserver_enable "1"
+    seta logserver_address "localhost:27961"
+    seta logserver_user "yourname"
+    seta logserver_password "yourpass"
 </code>
 * use netcat to listen for incoming udp packets on the selected port (27961):
 <code>
-	nc -ul 27961
+    nc -ul 27961
 </code>
-* start the server. Yopu should receive in netcat the string
-
-	"\uyourname\pyourpass"
-
+* start the server. You should read in netcat the string
+<code>
+    "\uyourname\pyourpass"
+</code>
    repeated 10 times.
 
 TODO
