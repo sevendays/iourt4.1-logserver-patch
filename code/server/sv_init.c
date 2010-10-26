@@ -808,15 +808,21 @@ Try to see if the logserver is alive and willing to chat.
 void LOG_Authenticate( void ) {
     char string[MAX_MSGLEN];
     unsigned short i;
+    unsigned int len;
+    #define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
     if (logserver_password->string[0] && logserver_user->string[0])
     {
-        sprintf(string, "u\\%s\\p%s\n", logserver_user->string, logserver_password->string);
-        Com_Printf("Trying to authenticate with the logserver: %s", string);
+        len = MIN(MAX_MSGLEN, strlen(logserver_user->string));
+        *((char*)memcpy(string, logserver_user->string, len)+len) = '\0';
+        len = MIN(MAX_MSGLEN-len, strlen(logserver_password->string));
+        *((char*)memcpy(string+strlen(string), logserver_password->string, len)+len) ='\0';
+        Com_Printf("Trying to authenticate with the logserver... Token: %s\n", string);
 
         // TODO do a serious authentication thingy.
         for(i=0; i<10; i++)
         {
             Sys_SendPacket(strlen(string), string, svs.logserverAddress);
+            Com_Printf("Attempt #%u...\n",i);
         }
 
         // TODO the server should answer, and we should save the user into
